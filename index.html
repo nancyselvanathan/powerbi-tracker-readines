@@ -878,9 +878,10 @@ function renderMatch(m) {
     "<tr><td><b>" + esc(r.title) + "</b></td><td>" + r.type + "</td><td>" + esc(plannedLabel(r)) + "</td><td>" + calCell(r) +
     '</td><td><span class="pill s-' + { ok: "on", diff: "risk", missing: "idle" }[r.status] + '">' + esc(statusText(r)) + "</span></td></tr>").join("")
     : '<tr><td colspan="5" class="meta">Nothing in this view.</td></tr>';
-  $("#unmatched").innerHTML = m.unmatched.length
-    ? '<div class="unm"><b>On the calendar but not matched to the plan (' + m.unmatched.length + ").</b><ul>" +
-      m.unmatched.map(u => "<li>" + esc(u.e.subject) + " on " + esc(fmtDay(u.e.day)) + ". " + esc(u.hint) + "</li>").join("") + "</ul></div>" : "";
+  const unmatched = m.unmatched.filter(u => norm(u.e.subject) !== norm("Power BI Tracker Office Hours"));
+  $("#unmatched").innerHTML = unmatched.length
+    ? '<div class="unm"><b>On the calendar but not matched to the plan (' + unmatched.length + ").</b><ul>" +
+      unmatched.map(u => "<li>" + esc(u.e.subject) + " on " + esc(fmtDay(u.e.day)) + ". " + esc(u.hint) + "</li>").join("") + "</ul></div>" : "";
 }
 function renderCoverage() {
   const m = matchCalendar(), rows = m.rows;
