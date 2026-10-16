@@ -1,0 +1,1285 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Power BI Tracker rollout – launch readiness</title>
+<style>
+:root {
+  --bg: #EEF2F8;
+  --surface: #FFFFFF;
+  --ink: #0B1F44;
+  --muted: #4F5F7D;
+  --line: #C9D3E6;
+  --accent: #174EA0;
+  --accent-ink: #FFFFFF; --navy: #0A2250; --head-bg: #E3ECF9; --lane-bg: #DCE7F7; --h-ink: #0A2250; --kpi-bar: 4px; --tint: 8%; --badge-bg: #F29130; --badge-ink: #0A2250; --kc-days: #174EA0; --kc-ready: #2F7D55; --kc-risk: #C98A12; --kc-open: #F29130; --kc-next: #0A2250;
+  --on: #2F7D55;
+  --risk: #B57A0A;
+  --off: #C2412D;
+  --idle: #6B84A8;
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0E1920; --surface: #16252F; --ink: #E6EDF2; --muted: #9AAAB6; --line: #2B3C48;
+    --accent: #5FB4CC; --accent-ink: #0E1920; --navy: #0E1920; --head-bg: transparent; --lane-bg: color-mix(in srgb, var(--ink) 5%, var(--surface)); --h-ink: var(--ink); --kpi-bar: 0px; --tint: 0%; --badge-bg: var(--line); --badge-ink: var(--ink); --kc-days: #174EA0; --kc-ready: #2F7D55; --kc-risk: #C98A12; --kc-open: #F29130; --kc-next: #0A2250; --on: #4DB27F; --risk: #E0A93A; --off: #E5705C; --idle: #7FA0B8;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #EEF2F8; --surface: #FFFFFF; --ink: #0B1F44; --muted: #4F5F7D; --line: #C9D3E6;
+  --accent: #174EA0; --accent-ink: #FFFFFF; --navy: #0A2250; --head-bg: #E3ECF9; --lane-bg: #DCE7F7; --h-ink: #0A2250; --kpi-bar: 4px; --tint: 8%; --badge-bg: #F29130; --badge-ink: #0A2250; --kc-days: #174EA0; --kc-ready: #2F7D55; --kc-risk: #C98A12; --kc-open: #F29130; --kc-next: #0A2250; --on: #2F7D55; --risk: #B57A0A; --off: #C2412D; --idle: #6B84A8;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --bg: #0E1920; --surface: #16252F; --ink: #E6EDF2; --muted: #9AAAB6; --line: #2B3C48;
+  --accent: #5FB4CC; --accent-ink: #0E1920; --navy: #0E1920; --head-bg: transparent; --lane-bg: color-mix(in srgb, var(--ink) 5%, var(--surface)); --h-ink: var(--ink); --kpi-bar: 0px; --tint: 0%; --badge-bg: var(--line); --badge-ink: var(--ink); --kc-days: #174EA0; --kc-ready: #2F7D55; --kc-risk: #C98A12; --kc-open: #F29130; --kc-next: #0A2250; --on: #4DB27F; --risk: #E0A93A; --off: #E5705C; --idle: #7FA0B8;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 15px; line-height: 1.5; }
+button, select, textarea, input { font: inherit; color: inherit; }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.wrap { max-width: 1240px; margin: 0 auto; padding: 24px 20px 64px; }
+h2 { font-family: var(--serif); font-size: 22px; margin: 0; font-weight: 600; }
+h3 { margin: 0; }
+
+.topbar { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+.topbar .name { font-weight: 600; color: var(--muted); }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.dirty { color: var(--risk); font-weight: 600; font-size: 14px; }
+td select { padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); }
+.btn { border: 1px solid var(--line); background: var(--surface); padding: 7px 14px; border-radius: 6px; cursor: pointer; font-weight: 500; }
+.btn:hover { border-color: var(--accent); }
+.btn[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn.small { padding: 4px 10px; font-size: 14px; }
+
+.s-on { --c: var(--on); } .s-risk { --c: var(--risk); } .s-off { --c: var(--off); } .s-idle { --c: var(--idle); }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; background: var(--c); }
+
+/* KPI cards */
+.verdict { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.kpi { display: block; text-align: left; font: inherit; color: inherit; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 10px 14px; min-width: 0; width: 100%; }
+button.kpi { cursor: pointer; }
+button.kpi:hover { border-color: var(--accent); }
+.kpi .lab { display: block; font-size: 12px; font-weight: 600; color: var(--muted); }
+.kpi .val { display: block; font-family: var(--serif); font-size: 28px; line-height: 1.15; font-weight: 600; margin: 3px 0 2px; }
+.kpi .val.sm { font-size: 16px; line-height: 1.25; margin: 5px 0 4px; }
+.kpi .val .pill { font-family: var(--sans); vertical-align: middle; margin-left: 4px; }
+.kpi .foot { display: block; font-size: 12.5px; color: var(--muted); }
+.kpi.status { border-left: 6px solid var(--idle); }
+.verdict[data-s="on"] .kpi.status { border-left-color: var(--on); }
+.verdict[data-s="risk"] .kpi.status { border-left-color: var(--risk); }
+.verdict[data-s="off"] .kpi.status { border-left-color: var(--off); }
+.kpi.next { grid-column: span 2; }
+.mix { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--line); gap: 2px; margin: 7px 0 5px; }
+.mix span { display: block; height: 100%; background: var(--c); }
+.mixlegend { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 12px; color: var(--muted); }
+.mixlegend .dot { width: 8px; height: 8px; margin-right: 4px; }
+.flagbar { grid-column: 1 / -1; padding: 8px 14px; border: 1px solid var(--c); border-left-width: 6px; border-radius: 4px; background: color-mix(in srgb, var(--c) 10%, var(--surface)); font-size: 13px; }
+@media (max-width: 640px) { .kpi.next { grid-column: span 1; } }
+
+
+.main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; margin-top: 16px; align-items: start; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 4px; }
+.panel > header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.sub { color: var(--muted); font-size: 14px; margin: 2px 0 0; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip, .mchip { border: 1px solid var(--line); background: transparent; border-radius: 999px; padding: 4px 12px; cursor: pointer; font-size: 14px; }
+.chip[aria-pressed="true"], .mchip[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+
+/* timeline */
+.tl-scroll { overflow-x: auto; }
+.tl { display: grid; grid-template-columns: 250px minmax(560px, 1fr); min-width: 860px; }
+.tl-head { height: 58px; border-bottom: 1px solid var(--line); position: relative; }
+.tl-labels .tl-head { padding: 0 18px 8px; display: flex; align-items: end; color: var(--muted); font-size: 13px; }
+.month { position: absolute; bottom: 6px; font-size: 13px; color: var(--muted); padding-left: 6px; border-left: 1px solid var(--line); height: 22px; line-height: 22px; }
+.golive-tag { position: absolute; top: 6px; transform: translateX(-50%); text-align: center; font-size: 12px; font-weight: 700; color: var(--accent); white-space: nowrap; pointer-events: none; }
+.golive-tag i { display: block; width: 14px; height: 14px; margin: 0 auto 2px; background: var(--accent); transform: rotate(45deg); }
+.lanehead { height: 32px; display: flex; align-items: center; padding: 0 18px; font-weight: 700; font-size: 13px; background: color-mix(in srgb, var(--ink) 5%, var(--surface)); border-bottom: 1px solid var(--line); }
+.lanefill { height: 32px; background: color-mix(in srgb, var(--ink) 5%, var(--surface)); border-bottom: 1px solid var(--line); }
+.rowlab { all: unset; box-sizing: border-box; display: block; width: 100%; height: 50px; padding: 6px 18px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.rowlab b { display: block; margin-top: 3px; font-weight: 600; font-size: 13.5px; line-height: 1.25; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.rowlab small { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.rowlab:hover, .rowlab.sel { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.rowlab:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
+.plot { position: relative; }
+.rowtrack { position: relative; height: 50px; border-bottom: 1px solid var(--line); }
+.rowtrack.lane { height: 32px; background: color-mix(in srgb, var(--ink) 5%, var(--surface)); }
+.gl { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--line); opacity: .5; }
+.bar { all: unset; box-sizing: border-box; position: absolute; top: 14px; height: 22px; border-radius: 4px; cursor: pointer; min-width: 8px;
+  background: color-mix(in srgb, var(--c) 35%, var(--surface)); border: 2px solid var(--c); }
+.mark { all: unset; box-sizing: border-box; position: absolute; top: 17px; width: 16px; height: 16px; margin-left: -8px; transform: rotate(45deg); cursor: pointer; background: var(--c); border: 2px solid var(--surface); box-shadow: 0 0 0 1.5px var(--c); }
+.mark.golive { background: var(--accent); box-shadow: 0 0 0 1.5px var(--accent); width: 18px; height: 18px; margin-left: -9px; top: 16px; }
+.bar.sel, .mark.sel { outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 3px; }
+.bar:focus-visible, .mark:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.dlab { position: absolute; top: 15px; font-size: 12px; color: var(--muted); white-space: nowrap; pointer-events: none; line-height: 20px; }
+.vline { position: absolute; top: 0; bottom: 0; width: 2px; pointer-events: none; }
+.vline.today { background: var(--ink); opacity: .65; }
+.vline.golive { background: var(--accent); }
+.vtag { position: absolute; top: 60px; transform: translateX(-50%); font-size: 11px; background: var(--ink); color: var(--surface); padding: 0 6px; border-radius: 3px; pointer-events: none; z-index: 2; }
+.legend { padding: 12px 18px; color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; gap: 6px 18px; border-top: 1px solid var(--line); }
+.legend .sw { display: inline-block; width: 14px; height: 10px; border-radius: 2px; margin-right: 6px; border: 2px solid var(--c); background: color-mix(in srgb, var(--c) 35%, var(--surface)); vertical-align: -1px; }
+
+/* detail */
+.detail { padding: 18px; }
+.detail h3 { font-family: var(--serif); font-size: 21px; font-weight: 600; margin-bottom: 6px; line-height: 1.2; }
+.pill { display: inline-block; padding: 1px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; background: color-mix(in srgb, var(--c) 16%, var(--surface)); border: 1px solid var(--c); }
+.detail h4 { margin: 16px 0 4px; font-size: 13px; color: var(--muted); font-weight: 600; }
+.detail ul { margin: 0; padding-left: 18px; }
+.detail ul.checks { list-style: none; padding: 0; }
+.detail ul.checks li { display: flex; gap: 8px; align-items: flex-start; margin: 2px 0; }
+.flag { margin: 12px 0 0; padding: 8px 10px; border-left: 4px solid var(--c); background: color-mix(in srgb, var(--c) 10%, var(--surface)); font-size: 14px; }
+.detail select, .detail textarea { width: 100%; padding: 6px 8px; border: 1px solid var(--line); background: var(--bg); border-radius: 4px; }
+.detail textarea { min-height: 70px; resize: vertical; }
+.hint { color: var(--muted); font-size: 13px; padding: 12px 18px; }
+.note { margin-top: 6px; padding: 8px 10px; background: var(--bg); border-radius: 4px; font-size: 14px; }
+
+/* sections */
+.section { margin-top: 24px; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 24px; align-items: start; }
+.list { list-style: none; margin: 0; padding: 0; }
+.list li { display: grid; grid-template-columns: 1fr auto; gap: 12px; padding: 13px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+.list li:last-child { border-bottom: 0; }
+.list li.done .q { text-decoration: line-through; color: var(--muted); }
+.q { font-weight: 600; }
+.meta { color: var(--muted); font-size: 14px; }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th { text-align: left; font-size: 13px; color: var(--muted); font-weight: 600; padding: 10px 18px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: 12px 18px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+.cov { padding: 6px 18px 14px; }
+.covrow { display: grid; grid-template-columns: 150px 1fr; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.covrow:last-child { border-bottom: 0; }
+.pips { display: flex; gap: 3px; flex-wrap: wrap; margin-bottom: 4px; }
+.pips i { width: 16px; height: 10px; border-radius: 2px; background: var(--line); }
+.pips i.f { background: var(--accent); }
+.pips i.d { background: var(--risk); }
+.unm { padding: 12px 18px; border-top: 1px solid var(--line); font-size: 14px; }
+.unm ul { margin: 6px 0 0; padding-left: 18px; }
+.dates { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.dates span { font-size: 12px; padding: 1px 7px; border-radius: 4px; border: 1px solid var(--line); }
+.dates span.hit { border-color: var(--on); background: color-mix(in srgb, var(--on) 14%, var(--surface)); }
+.owners { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; padding: 16px 18px; }
+.owners div { border-left: 3px solid var(--accent); padding-left: 12px; }
+.owners b { display: block; }
+.owners small { color: var(--muted); }
+.toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--surface); padding: 10px 18px; border-radius: 6px; opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 5; }
+.toast.show { opacity: 1; }
+
+
+/* walkthrough */
+.walk { padding: 14px 18px 12px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
+.walkctl { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+.walkctl label { font-size: 14px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.walkctl select { padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
+#playBtn { min-width: 150px; }
+#walkScrub { width: 100%; margin: 12px 0 8px; accent-color: var(--accent); }
+.walkinfo { display: grid; grid-template-columns: 1fr auto; gap: 8px 24px; min-height: 104px; align-items: start; }
+.walkdate { font-family: var(--serif); font-size: 20px; font-weight: 600; margin-bottom: 4px; }
+#walkEvents ul { margin: 0; padding-left: 18px; }
+#walkEvents li.gate { font-weight: 700; }
+.walkstats { font-size: 14px; color: var(--muted); display: grid; gap: 2px; text-align: right; }
+.walkstats b { color: var(--ink); }
+.walknote { margin: 6px 0 0; font-size: 12.5px; color: var(--muted); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.rowlab.past, .bar.past, .mark.past { opacity: .5; }
+.rowlab.past.sel, .bar.past.sel, .mark.past.sel { opacity: 1; }
+@media (max-width: 960px) { .walkinfo { grid-template-columns: 1fr; } .walkstats { text-align: left; } }
+
+/* tabs */
+.tabs { position: sticky; top: 0; z-index: 10; display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; justify-content: space-between;
+  background: var(--bg); padding: 8px 0 10px; margin-bottom: 4px; border-bottom: 1px solid var(--line); }
+.tablist { display: flex; flex-wrap: wrap; gap: 4px; }
+.tab { border: 1px solid transparent; background: transparent; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-weight: 600; color: var(--muted); }
+.tab:hover { color: var(--ink); background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.tab[aria-selected="true"] { background: var(--surface); color: var(--ink); border-color: var(--line); box-shadow: inset 0 -3px 0 var(--accent); }
+.tab .count { display: inline-block; min-width: 20px; padding: 0 6px; margin-left: 6px; border-radius: 999px; font-size: 12px; background: var(--line); color: var(--ink); text-align: center; }
+.strip { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; }
+.strip .dot { margin-right: 0; }
+.tabpanel[hidden] { display: none; }
+.tabpanel > :first-child { margin-top: 16px; }
+@media print { .walk { display: none !important; } .tabs { display: none !important; } .tabpanel[hidden] { display: block !important; } }
+
+@media (max-width: 960px) {
+  .main, .two { grid-template-columns: 1fr; }
+}
+@media print { .actions, .chips, .btn { display: none !important; } body { background: #fff; } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* compact layout */
+body { font-size: 13.5px; line-height: 1.45; }
+.wrap { max-width: 1360px; padding: 14px 16px 36px; }
+h2 { font-size: 18px; }
+.topbar { margin-bottom: 8px; gap: 8px; }
+.btn { padding: 5px 11px; }
+.btn.small { padding: 3px 8px; font-size: 13px; }
+.dirty { font-size: 13px; }
+.tabs { padding: 5px 0 7px; }
+.tab { padding: 5px 11px; }
+.tabpanel > :first-child { margin-top: 12px; }
+.main { margin-top: 12px; gap: 14px; }
+@media (min-width: 961px) { .main { grid-template-columns: minmax(0, 1fr) 300px; } }
+.panel > header { padding: 9px 14px; }
+.sub { font-size: 12.5px; }
+.chip, .mchip { padding: 3px 10px; font-size: 13px; }
+.section { margin-top: 14px; }
+.two { margin-top: 14px; gap: 14px; }
+.hint { padding: 8px 14px; font-size: 12px; }
+.legend { padding: 8px 14px; font-size: 12px; gap: 4px 16px; }
+th { padding: 7px 14px; font-size: 12px; }
+td { padding: 8px 14px; }
+.list li { padding: 9px 14px; }
+.cov { padding: 4px 14px 10px; }
+.covrow { padding: 7px 0; }
+.owners { padding: 12px 14px; gap: 10px; }
+.unm { padding: 9px 14px; font-size: 13px; }
+.detail { padding: 14px; }
+.detail h3 { font-size: 18px; }
+.detail h4 { margin: 11px 0 3px; font-size: 12px; }
+.walk { padding: 9px 14px 8px; }
+.walkctl { gap: 6px 12px; }
+.walkctl label { font-size: 13px; }
+#playBtn { min-width: 130px; }
+#walkScrub { flex: 1 1 200px; width: auto; margin: 0; }
+.walkinfo { min-height: 72px; margin-top: 8px; }
+.walkdate { font-size: 17px; margin-bottom: 2px; }
+.walkstats { font-size: 13px; }
+
+/* compact timeline */
+.tl { grid-template-columns: 215px minmax(560px, 1fr); min-width: 780px; }
+.tl-head { height: 54px; }
+.tl-labels .tl-head { padding: 0 14px 6px; font-size: 12px; }
+.month { font-size: 12px; height: 18px; line-height: 18px; bottom: 4px; }
+.golive-tag { top: 4px; font-size: 11px; }
+.golive-tag i { width: 12px; height: 12px; }
+.lanehead, .lanefill { height: 26px; }
+.lanehead { padding: 0 14px; font-size: 12px; }
+.rowlab { display: flex; align-items: center; height: 40px; padding: 3px 14px; }
+.rowlab b { flex: 1; min-width: 0; margin-top: 0; font-size: 12.5px; line-height: 1.2; }
+.rowtrack { height: 40px; }
+.rowtrack.lane { height: 26px; }
+.bar { top: 10px; height: 20px; }
+.mark { top: 12px; width: 15px; height: 15px; margin-left: -7.5px; }
+.mark.golive { top: 11px; width: 17px; height: 17px; margin-left: -8.5px; }
+.dlab { top: 10px; font-size: 11.5px; line-height: 20px; }
+.vtag { top: 56px; font-size: 10.5px; }
+
+/* McKesson navy theme */
+.topbar { background: var(--navy); color: #fff; padding: 9px 14px; border-radius: 4px; }
+.topbar .name { color: #fff; }
+.topbar .dirty { color: #F7C873; }
+.topbar :focus-visible { outline-color: #fff; }
+
+/* blue buttons: every clickable button is McKesson blue #174EA0 */
+.btn, .chip, .mchip { background: #174EA0; color: #fff; border: 1px solid var(--accent); }
+.btn:hover, .chip:hover, .mchip:hover { background: #1F5FBA; }
+.btn.primary { background: #174EA0; color: #fff; border-color: var(--accent); font-weight: 600; }
+.btn.primary:hover { background: #1F5FBA; }
+.btn[aria-pressed="true"], .chip[aria-pressed="true"], .mchip[aria-pressed="true"] { background: var(--navy); color: #fff; border-color: var(--navy); box-shadow: inset 0 0 0 2px rgba(255,255,255,.85); }
+.topbar .btn { border-color: rgba(255,255,255,.55); }
+
+/* light-mode colour (the variables above are neutral in dark mode, so dark looks as before) */
+.panel > header { background: var(--head-bg); border-radius: 3px 3px 0 0; }
+.panel h2, .detail h3 { color: var(--h-ink); }
+th { background: var(--head-bg); }
+.lanehead, .lanefill, .rowtrack.lane { background: var(--lane-bg); }
+.tab .count { background: var(--badge-bg); color: var(--badge-ink); font-weight: 600; }
+.kpi { --kc: var(--accent); background: color-mix(in srgb, var(--kc) var(--tint), var(--surface)); box-shadow: inset 0 var(--kpi-bar) 0 var(--kc); }
+.kpi.kc-days { --kc: var(--kc-days); }
+.kpi.kc-ready { --kc: var(--kc-ready); }
+.kpi.kc-risk { --kc: var(--kc-risk); }
+.kpi.kc-open { --kc: var(--kc-open); }
+.kpi.kc-next { --kc: var(--kc-next); }
+.verdict[data-s="on"] .kpi.status { --kc: var(--on); }
+.verdict[data-s="risk"] .kpi.status { --kc: var(--risk); }
+.verdict[data-s="off"] .kpi.status { --kc: var(--off); }
+.kpi.kc-days .val { color: var(--kc-days); }
+
+/* version stamp and leadership summary */
+.topbar .name .stamp { font-weight: 400; font-size: 12px; opacity: .9; margin-top: 2px; }
+.sumtext { margin: 0; padding: 14px 18px; white-space: pre-wrap; font: 13.5px/1.55 var(--sans); }
+
+/* add / remove items (edit mode) */
+.addform { padding: 10px 14px; border-top: 1px solid var(--line); }
+.addrow { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+.addrow label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); flex: 1 1 150px; }
+.addrow label.wide { flex: 2 1 260px; }
+.addrow input, .addrow select { padding: 5px 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 4px; font-size: 13px; }
+.rowbtns { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="topbar">
+    <div class="name">Power BI Tracker rollout – launch readiness – as of <span id="asof"></span> <span class="pill s-risk editor-only" hidden="">Editing tools on</span><div class="stamp" id="stamp"></div></div>
+    <div class="actions">
+      <span class="dirty" id="dirty" hidden="">Unsaved changes</span>
+      <button class="btn editor-only" id="editBtn" aria-pressed="false" hidden="">Edit statuses</button>
+      <button class="btn editor-only" id="saveBtn" hidden="">Save changes</button>
+      <button class="btn editor-only" id="loadBtn" hidden="">Load changes</button>
+      <button class="btn editor-only" id="publishBtn" hidden="">Publish updated file</button>
+      <button class="btn editor-only" id="resetBtn" hidden="">Reset to plan</button>
+      <input type="file" id="loadFile" accept="application/json,.json" hidden="">
+      <button class="btn" id="themeBtn" aria-label="Switch color theme">Theme: Auto</button>
+      <button class="btn" onclick="window.print()">Print</button>
+      <button class="btn primary" id="copyBtn">Copy leadership update</button>
+    </div>
+  </div>
+
+  <nav class="tabs" aria-label="Dashboard sections">
+    <div class="tablist" role="tablist">
+      <button class="tab" role="tab" id="t-overview" aria-controls="tab-overview" aria-selected="true" data-tab="overview">Overview and timeline</button>
+      <button class="tab" role="tab" id="t-summary" aria-controls="tab-summary" aria-selected="false" data-tab="summary" tabindex="-1">Leadership summary</button>
+      <button class="tab" role="tab" id="t-open" aria-controls="tab-open" aria-selected="false" data-tab="open" tabindex="-1">Open items and calendar<span class="count" id="openCount"></span></button>
+      <button class="tab" role="tab" id="t-risks" aria-controls="tab-risks" aria-selected="false" data-tab="risks" tabindex="-1">Risks<span class="count" id="riskCount"></span></button>
+      <button class="tab" role="tab" id="t-comms" aria-controls="tab-comms" aria-selected="false" data-tab="comms" tabindex="-1">Communications</button>
+      <button class="tab" role="tab" id="t-owners" aria-controls="tab-owners" aria-selected="false" data-tab="owners" tabindex="-1">Owners</button>
+    </div>
+    <div class="strip s-idle" id="strip" aria-live="polite"></div>
+  </nav>
+
+  <div class="tabpanel" id="tab-overview" role="tabpanel" aria-labelledby="t-overview">
+  <section class="verdict" id="verdict" aria-live="polite"></section>
+
+  <div class="main">
+    <section class="panel" aria-labelledby="tlTitle">
+      <header>
+        <div><h2 id="tlTitle">Rollout timeline</h2><p class="sub">Select any gate, milestone or training wave for its detail.</p></div>
+        <div class="chips" role="group" aria-label="Filter timeline">
+          <button class="chip" data-f="gates" aria-pressed="true">Readiness gates</button>
+          <button class="chip" data-f="delivery" aria-pressed="false">Delivery</button>
+          <button class="chip" data-f="training" aria-pressed="false">Training</button>
+          <button class="chip" data-f="all" aria-pressed="false">Everything</button>
+        </div>
+      </header>
+      <div class="walk" role="group" aria-label="Rollout walkthrough">
+        <div class="walkctl">
+          <button class="btn primary" id="playBtn" aria-pressed="false">Play walkthrough</button>
+          <button class="btn" id="walkReset">Back to today</button>
+          <label>Speed <select id="walkSpeed"><option value="1">1x</option><option value="2">2x</option><option value="4">4x</option></select></label>
+          <label><input type="checkbox" id="walkPause" checked=""> Pause on readiness gates</label>
+          <label class="sr" for="walkScrub">Walkthrough date</label>
+          <input type="range" id="walkScrub" step="1">
+        </div>
+        <div class="walkinfo">
+          <div><div class="walkdate" id="walkDate"></div><div id="walkEvents"></div></div>
+          <div class="walkstats" id="walkStats"></div>
+        </div>
+      </div>
+      <div class="tl-scroll"><div class="tl" id="tl"></div></div>
+      <div class="legend">
+        <span class="s-on"><i class="sw"></i>On track or complete</span>
+        <span class="s-idle"><i class="sw"></i>Planned or scheduled</span>
+        <span class="s-risk"><i class="sw"></i>At risk</span>
+        <span class="s-off"><i class="sw"></i>Off track</span>
+        <span>Diamond = a single date. Bar = a date range. Faded = scheduled date has passed.</span>
+        <span>The walkthrough replays planned dates. Statuses shown are today's, not forecasts.</span>
+      </div>
+    </section>
+    <aside class="panel" aria-label="Detail" id="detailPanel"></aside>
+  </div>
+
+  </div>
+
+  <div class="tabpanel" id="tab-summary" role="tabpanel" aria-labelledby="t-summary" hidden="">
+  <section class="panel section" aria-labelledby="sumTitle">
+    <header>
+      <div><h2 id="sumTitle">Leadership summary</h2><p class="sub">Written from the dashboard each time something changes. Copy it into an email.</p></div>
+      <button class="btn" id="copySummary">Copy summary</button>
+    </header>
+    <pre class="sumtext" id="sumText"></pre>
+  </section>
+  </div>
+
+  <div class="tabpanel" id="tab-open" role="tabpanel" aria-labelledby="t-open" hidden="">
+  <div class="two">
+    <section class="panel" aria-labelledby="openTitle">
+      <header><div><h2 id="openTitle">Open items to close before launch</h2><p class="sub">Information the plan still needs. Nothing here is estimated.</p></div></header>
+      <ul class="list" id="openList"></ul>
+      <div class="addform" id="openAdd" hidden="">
+        <div class="addrow">
+          <label class="wide">New item<input id="addOpenText" type="text" placeholder="What needs to be closed?"></label>
+          <label>Owner<input id="addOpenOwner" type="text"></label>
+          <label>Due<input id="addOpenDue" type="text" placeholder="For example, Nov 6"></label>
+          <button class="btn small" id="addOpenBtn">Add item</button>
+        </div>
+      </div>
+    </section>
+    <section class="panel" aria-labelledby="covTitle">
+      <header><div><h2 id="covTitle">Calendar coverage</h2><p class="sub">Planned meetings found on the calendar by their exact title.</p></div></header>
+      <div class="cov" id="cov"></div>
+    </section>
+  </div>
+
+  <section class="panel section" aria-labelledby="matchTitle">
+    <header>
+      <div><h2 id="matchTitle">Meeting titles and calendar match</h2><p class="sub" id="matchSub"></p></div>
+      <div class="chips" role="group" aria-label="Filter meetings">
+        <button class="mchip" data-mf="all" aria-pressed="true">All</button>
+        <button class="mchip" data-mf="missing" aria-pressed="false">Not on calendar</button>
+        <button class="mchip" data-mf="diff" aria-pressed="false">Date differs</button>
+        <button class="btn small" id="copyTitles">Copy title list</button>
+      </div>
+    </header>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Name the invite exactly</th><th>Type</th><th>Planned</th><th>On calendar</th><th>Status</th></tr></thead>
+      <tbody id="matchRows"></tbody>
+    </table></div>
+    <div id="unmatched"></div>
+    <div class="hint">The calendar agent searches Outlook for these exact titles and refreshes the calendar data in this file. Titles are not case sensitive, but spelling and the session number must match.</div>
+  </section>
+  </div>
+
+  <div class="tabpanel" id="tab-risks" role="tabpanel" aria-labelledby="t-risks" hidden="">
+  <section class="panel section" aria-labelledby="riskTitle">
+    <header><div><h2 id="riskTitle">Risks and mitigations</h2><p class="sub" id="riskSub"></p></div></header>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Risk</th><th>Impact</th><th>Mitigation</th><th>Owner</th><th>Level</th></tr></thead>
+      <tbody id="riskRows"></tbody>
+    </table></div>
+    <div class="addform" id="riskAdd" hidden="">
+      <div class="addrow">
+        <label class="wide">New risk<input id="addRiskText" type="text" placeholder="What could go wrong?"></label>
+        <label class="wide">Impact<input id="addRiskImpact" type="text"></label>
+        <label class="wide">Mitigation<input id="addRiskMit" type="text"></label>
+        <label>Owner<input id="addRiskOwner" type="text"></label>
+        <label>Level<select id="addRiskLevel"><option>Low</option><option selected="">Medium</option><option>High</option></select></label>
+        <button class="btn small" id="addRiskBtn">Add risk</button>
+      </div>
+    </div>
+  </section>
+
+  </div>
+
+  <div class="tabpanel" id="tab-comms" role="tabpanel" aria-labelledby="t-comms" hidden="">
+  <section class="panel section" aria-labelledby="comTitle">
+    <header><div><h2 id="comTitle">Leadership communications</h2></div></header>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Date</th><th>Communication</th><th>Audience</th><th>Owner</th><th>Status</th></tr></thead>
+      <tbody id="comRows"></tbody>
+    </table></div>
+  </section>
+
+  </div>
+
+  <div class="tabpanel" id="tab-owners" role="tabpanel" aria-labelledby="t-owners" hidden="">
+  <section class="panel section" aria-labelledby="ownTitle">
+    <header><div><h2 id="ownTitle">Who is accountable</h2></div></header>
+    <div class="owners" id="owners"></div>
+  </section>
+  </div>
+</div>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+const PRISTINE = "<!DOCTYPE html>\n" + document.documentElement.outerHTML; // clean copy used by "Publish updated file"
+const BAKED = {"app":"pbi-tracker-readiness","version":1,"publishVersion":2,"updatedBy":"Nancy","savedAt":"2026-10-16T12:32:06.752Z","items":{"rollout":{"status":"On Track","done":[false,false,false,false],"note":""},"delivery-ready":{"status":"On Track","done":[false,false,false,false],"note":""},"sales-attestation":{"status":"Planned","done":[false,false,false],"note":""},"tracker-ready":{"status":"Planned","done":[false,false,false,false],"note":""},"business-sales":{"status":"Planned","done":[false,false,false,false],"note":""},"executive-ready":{"status":"Planned","done":[false,false,false,false],"note":""},"golive-comms":{"status":"Planned","done":[false,false,false,false],"note":""},"stabilization":{"status":"Planned","done":[false,false,false,false],"note":""},"design":{"status":"Scheduled","done":[false,false],"note":""},"collateral":{"status":"Scheduled","done":[false,false,false,false],"note":""},"qc-release":{"status":"Scheduled","done":[false],"note":""},"bdd":{"status":"Scheduled","done":[false],"note":""},"optimization":{"status":"Scheduled","done":[false],"note":""},"final":{"status":"Scheduled","done":[false,false,false],"note":""},"launch":{"status":"Scheduled","done":[false],"note":""},"wave1":{"status":"Scheduled","done":[false,false],"note":""},"wave2":{"status":"Scheduled","done":[false,false],"note":""},"wave3":{"status":"Scheduled","done":[false,false],"note":""},"wave4":{"status":"Scheduled","done":[false],"note":""},"wave5":{"status":"Scheduled","done":[false],"note":""},"newhire":{"status":"Planned","done":[false,false,false],"note":""},"oh-recurring":{"status":"Scheduled","done":[false,false,false],"note":""}},"open":{"o1":false,"o2":false,"o3":false,"o4":false},"risks":[{"risk":"Training attendance or coverage gaps","level":"Low","status":"Open"},{"risk":"Sales attestation not completed by November 20","level":"Medium","status":"Open"},{"risk":"Late feedback before final incorporation on December 3","level":"Low","status":"Open"},{"risk":"Post-go-live support demand remains elevated","level":"Low","status":"Open"}],"comms":[{"name":"Rollout and communications approval","status":"Scheduled"},{"name":"Training program launch","status":"Scheduled"},{"name":"Business and sales readiness update","status":"Scheduled"},{"name":"Executive readiness summary","status":"Scheduled"},{"name":"Go-live communication","status":"Scheduled"},{"name":"Post-launch adoption update","status":"Planned"},{"name":"Adoption and stabilization summary","status":"Planned"}],"addedRisks":[],"removedRisks":["PDF automation testing issues"],"addedOpen":[],"removedOpen":[]}; // statuses published into this file by "Publish updated file"
+/* =====================================================================
+   DATA – taken from power_bi_tracker_rollout_dashboard_v6_calendar_reconciliation.html
+   Edit this block to update the dashboard. Nothing is simulated.
+
+   WEEKLY UPDATE GUIDE
+   - Dates, owners, sessions and other structure: edit this block, then save the file.
+   - Statuses, criteria, notes, open items, risks and communication status: click "Edit statuses" on the
+     page, make changes, then "Save changes" to download a small update file. Anyone can open the
+     dashboard and use "Load changes" to see the same updates.
+   - Today's date is read from the computer's clock. To preview another date, set TODAY_OVERRIDE below.
+   ===================================================================== */
+const TODAY_OVERRIDE = null; // for example "2026-11-13" to preview that date
+const TODAY = TODAY_OVERRIDE || (() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); })();
+const GO_LIVE = "2026-12-04";
+const GO_LIVE_TIME = "9:00 AM CT";
+const UPDATED_BY = "Nancy";      // shown as "Last updated by ..." in the header
+const VERSION_BASE = 1;          // version of the file as first delivered; each "Publish updated file" adds 1
+const SUMMARY_TO = ["Danyelle Brausen", "Lydia Zheng", "Brandon Peters", "Brian Schmidt", "Justin Taylor"]; // Leadership summary recipients
+
+const LANES = [
+  { id: "gates", group: "gates", title: "Readiness gates", items: [
+    { id: "rollout", date: "2026-10-19", title: "Rollout & Communications Approval", status: "On Track", owners: ["Nancy Selvanathan"],
+      criteria: ["Communication plan approved", "Training calendar published", "Office-hours calendar published", "Stakeholder alignment established"],
+      training: ["Schedule published"], office: ["Schedule published"], deliverables: ["Rollout plan", "Communication plan"],
+      risks: ["Late stakeholder feedback"], mitigations: ["Use one source of truth and weekly status cadence"] },
+    { id: "delivery-ready", date: "2026-10-26", title: "Delivery Readiness & Training Launch", status: "On Track", owners: ["Mayte Atienza", "Nancy Selvanathan"],
+      criteria: ["Final Tracker design approved", "PDF design signed off", "Training materials ready", "Training program launched"],
+      training: ["Training #1", "#2"], office: ["Office hours start Nov 2"], deliverables: ["Final Power BI Tracker Design", "PDF Design Signoff"],
+      risks: ["Training starts before all supporting content is stable"], mitigations: ["Freeze core training content and log deltas separately"] },
+    { id: "sales-attestation", date: "2026-11-11", end: "2026-11-20", title: "Assessment: Sales Attestation", status: "Planned", owners: ["Twana Holmes", "Laura Slayton"],
+      criteria: ["Sales test environment available", "Testing and readiness expectations communicated", "Sales attestation completed by Nov 20"],
+      training: ["Training #3-8"], office: ["Office hours, Nov 2 to 18"], deliverables: ["Sales attestation due Nov 20", "Testing-readiness results"],
+      risks: ["Testing feedback is not completed before the readiness gate"], mitigations: ["Track attestations and escalate outstanding responses"] },
+    { id: "tracker-ready", date: "2026-11-13", title: "Power BI Tracker Readiness", status: "Planned", owners: ["Mayte Atienza"],
+      criteria: ["Repeated training established", "FAQs and recordings available", "Readiness feedback tracked", "Priority issues assigned"],
+      training: ["Training #1-6"], office: ["Office hours, Nov 2 to 11"], deliverables: ["QC Tracker Release", "BDD QC Completion"],
+      risks: ["Recurring questions indicate unclear guidance"], mitigations: ["Update FAQ and demonstration script after each session"] },
+    { id: "business-sales", date: "2026-11-20", title: "Business & Sales Readiness", status: "Planned", owners: ["Brandon Peters", "Brian Schmidt", "Justin Taylor", "Nancy Selvanathan"],
+      criteria: ["Business scenarios validated", "Training participation reviewed", "Sales leadership briefed", "Adoption risks documented"],
+      training: ["Training #1-8"], office: ["Office hours, Nov 2 to 18"], deliverables: ["Optimization QC Completion", "Field feedback review"],
+      risks: ["Low participation or unresolved field concerns"], mitigations: ["Use sales leaders to reinforce attendance and close gaps"] },
+    { id: "executive-ready", date: "2026-11-23", title: "Executive Readiness Review", status: "Planned", owners: ["Brandon Peters", "Brian Schmidt", "Justin Taylor", "Nancy Selvanathan"],
+      criteria: ["Readiness status summarized", "Risks and decisions visible", "Support model confirmed", "Launch narrative aligned"],
+      training: ["Training #9"], office: ["Office hours, Nov 23 and 25"], deliverables: ["Executive readiness summary"],
+      risks: ["Leadership receives fragmented status"], mitigations: ["Use one-page executive readout from this dashboard"] },
+    { id: "golive-comms", date: "2026-12-01", title: "Go-Live Communication Released", status: "Planned", owners: ["Nancy Selvanathan"],
+      criteria: ["Go-live message distributed", "Support channels published", "Training recordings linked", "Post-launch schedule shared"],
+      training: ["Training #10"], office: ["Office hours, Nov 30 and Dec 2"], deliverables: ["Go-live communication", "Support resources"],
+      risks: ["Users miss launch expectations"], mitigations: ["Cascade through GPO Optimization and sales leadership"] },
+    { id: "stabilization", date: "2027-01-08", title: "Adoption & Stabilization Review", status: "Planned", owners: ["Thit Lwin Oo", "Nancy Selvanathan"], post: true,
+      criteria: ["Four weeks of support completed", "Adoption and issues reviewed", "Outstanding actions assigned", "Steady-state support transition agreed"],
+      training: ["Training #11-14"], office: ["Office hours, Dec 7 and 9"], deliverables: ["Adoption review", "Stabilization summary"],
+      risks: ["Support demand remains elevated"], mitigations: ["Extend targeted coaching for high-need user groups"] }
+  ]},
+  { id: "delivery", group: "delivery", title: "Delivery milestones", items: [
+    { id: "design", date: "2026-10-26", title: "Final Tracker Design + PDF Signoff", status: "Scheduled", owners: ["Mayte Atienza", "Thit Lwin Oo", "Nancy Selvanathan"],
+      criteria: ["Final Power BI Tracker design approved", "PDF design signoff complete"] },
+    { id: "collateral", date: "2026-10-26", title: "Training Collateral Ready", status: "Scheduled", owners: ["Mayte Atienza", "Nancy Selvanathan"],
+      criteria: ["Quick reference guide ready", "Training materials ready", "FAQs published", "Recordings available"] },
+    { id: "qc-release", date: "2026-11-02", title: "QC Tracker Release", status: "Scheduled", owners: ["Mayte Atienza"], criteria: ["QC release issued"] },
+    { id: "bdd", date: "2026-11-11", title: "BDD QC Completion", status: "Scheduled", owners: ["Mayte Atienza"], criteria: ["BDD quality-control activities complete"] },
+    { id: "optimization", date: "2026-11-20", title: "Optimization QC Completion", status: "Scheduled", owners: ["Mayte Atienza"], criteria: ["Optimization quality-control activities complete"] },
+    { id: "final", date: "2026-12-03", title: "Feedback + PDF Testing + Hypercare Plan", status: "Scheduled", owners: ["Mayte Atienza", "Thit Lwin Oo"],
+      criteria: ["Tracker feedback incorporated", "PDF automation testing complete", "Hypercare plan finalized"] },
+    { id: "launch", date: GO_LIVE, title: "Power BI Tracker Go-Live", status: "Scheduled", owners: ["Entire Rollout Team"], criteria: ["Power BI Tracker released"], launch: true }
+  ]},
+  { id: "waves", group: "training", title: "Training and adoption waves", items: [
+    { id: "wave1", date: "2026-10-26", end: "2026-10-30", title: "Wave 1: Training #1-2", status: "Scheduled", owners: ["Laura Slayton", "Twana Holmes", "Brandon Peters", "Justin Taylor", "Nancy Selvanathan"],
+      criteria: ["Full feature training repeated twice", "Questions captured during training"], supports: "Delivery Readiness" },
+    { id: "wave2", date: "2026-11-02", end: "2026-11-13", title: "Wave 2: Training #3-6 + office hours", status: "Scheduled", owners: ["Laura Slayton", "Twana Holmes", "Brandon Peters", "Justin Taylor", "Nancy Selvanathan"],
+      criteria: ["Broad exposure expanded", "FAQs refined"], supports: "Power BI Tracker Readiness" },
+    { id: "wave3", date: "2026-11-16", end: "2026-11-20", title: "Wave 3: Training #7-8 + office hours", status: "Scheduled", owners: ["Laura Slayton", "Twana Holmes", "Brandon Peters", "Justin Taylor", "Nancy Selvanathan"],
+      criteria: ["Field readiness validated", "Adoption risks identified"], supports: "Business & Sales Readiness" },
+    { id: "wave4", date: "2026-11-23", end: "2026-12-02", title: "Wave 4: Training #9-10 + office hours", status: "Scheduled", owners: ["Laura Slayton", "Twana Holmes", "Brandon Peters", "Justin Taylor", "Nancy Selvanathan"],
+      criteria: ["Final pre-launch reinforcement complete"], supports: "Executive Readiness + Go-Live Communication" },
+    { id: "wave5", date: "2026-12-07", end: "2027-01-01", title: "Post-launch: Training #11-14 + office hours (to Dec 9)", status: "Scheduled", owners: ["Laura Slayton", "Twana Holmes", "Brandon Peters", "Justin Taylor", "Nancy Selvanathan"], post: true,
+      criteria: ["Four weeks of post-launch enablement complete"], supports: "Adoption & Stabilization" },
+    { id: "newhire", date: "2026-11-16", title: "New-Hire Training Incorporated (due before Accelerate)", status: "Planned", owners: ["Twana Holmes", "Laura Slayton"],
+      criteria: ["Power BI Tracker content incorporated into upcoming new-hire training", "Training completed before Accelerate", "Completion and readiness confirmed"],
+      deliverables: ["Updated new-hire training materials", "Completion confirmation before Nov 16"],
+      risks: ["New-hire content is not finalized before Accelerate"], mitigations: ["Review materials and readiness status with Twana Holmes and Laura Slayton"] },
+    { id: "oh-recurring", date: "2026-11-02", end: "2026-12-09", title: "Office hours for the whole sales team, Monday and Wednesday (Nov 2 to Dec 9)", status: "Scheduled", owners: ["Mayte Atienza team"], ongoing: true,
+      criteria: ["Calendar holds established throughout rollout", "Sessions available for MSPL, Oncology, and Inside Sales", "Questions and follow-up actions tracked"],
+      deliverables: ["Recurring calendar holds", "Audience access for MSPL, Oncology, and Inside Sales"],
+      risks: ["Audience coverage gaps or low attendance"], mitigations: ["Review attendance weekly and adjust cadence or invitations"] }
+  ]}
+];
+
+const PRE_TRAINING_DATES = ["2026-10-26","2026-10-29","2026-11-02","2026-11-05","2026-11-09","2026-11-12","2026-11-16","2026-11-19","2026-11-23","2026-11-30"];
+/* Office hours for the whole sales team (MSPL, Oncology and Inside Sales): Monday and Wednesday, Nov 2 to Dec 9. */
+const OFFICE_HOURS = [["2026-11-02","14:30"], ["2026-11-04","14:30"], ["2026-11-09","14:30"], ["2026-11-11","14:30"], ["2026-11-16","14:30"], ["2026-11-18","14:30"], ["2026-11-23","14:30"], ["2026-11-25","14:30"], ["2026-11-30","14:30"], ["2026-12-02","14:30"], ["2026-12-07","14:30"], ["2026-12-09","14:30"]];
+const OH_ALL = OFFICE_HOURS.map(x => x[0]);
+
+const POST_WEEKS = ["2026-12-07", "2026-12-14", "2026-12-21", "2026-12-28"]; // week-of dates for sessions #11 to #14
+
+/* Meeting titles. Name every calendar invite exactly like this so the calendar agent can find it. */
+const TITLES = {
+  "rollout": "Rollout and Communications Approval",
+  "delivery-ready": "Delivery Readiness",
+  "sales-attestation": "Sales Attestation Window",
+  "tracker-ready": "Tracker Readiness",
+  "business-sales": "Business and Sales Readiness",
+  "executive-ready": "Executive Readiness Review",
+  "golive-comms": "Power BI Tracker Go-Live Communication",
+  "stabilization": "Adoption and Stabilization Review",
+  "design": "Final Design and PDF Signoff",
+  "collateral": "Training Collateral Ready",
+  "qc-release": "QC Tracker Release",
+  "bdd": "BDD QC Completion",
+  "optimization": "Optimization QC Completion",
+  "final": "Feedback, PDF Testing and Hypercare Plan",
+  "launch": "Power BI Tracker Go-Live",
+  "newhire": "New-Hire Training Incorporated"
+};
+const TRAINING_TITLE = n => "Power BI Tracker Training #" + n;
+const OFFICE_TITLE = n => "Power BI Tracker Office Hours #" + n;
+
+/* CALENDAR SYNC (for the agent)
+   Search Outlook for events from Oct 5, 2026 to Jan 15, 2027 whose titles exactly match the titles above and
+   in the communications list. Replace "events" with one entry per matching event:
+   { subject, start, end, organizer, link }  (start and end are ISO strings with the local offset;
+   link is the Teams join URL or ""). Set syncedAt to today's date (YYYY-MM-DD). Change nothing else. */
+const CALENDAR = {
+  syncedAt: null,
+  events: [
+    { subject: "Power BI Tracker Office Hours", start: "2026-10-27T14:30:00-05:00", end: "2026-10-27T15:00:00-05:00" },
+    { subject: "Power BI Tracker Office Hours", start: "2026-10-29T14:30:00-05:00", end: "2026-10-29T15:00:00-05:00" },
+    { subject: "Power BI Tracker Office Hours", start: "2026-11-05T14:30:00-06:00", end: "2026-11-05T15:00:00-06:00" },
+    { subject: "Power BI Tracker Office Hours", start: "2026-11-10T14:30:00-06:00", end: "2026-11-10T15:00:00-06:00" },
+    { subject: "Power BI Tracker Office Hours", start: "2026-11-12T14:30:00-06:00", end: "2026-11-12T15:00:00-06:00" },
+    { subject: "Power BI Tracker Office Hours", start: "2026-11-17T14:30:00-06:00", end: "2026-11-17T15:00:00-06:00" },
+    { subject: "Power BI Tracker Office Hours", start: "2026-11-19T14:30:00-06:00", end: "2026-11-19T15:00:00-06:00" },
+    { subject: "Power BI Tracker Office Hours", start: "2026-11-24T14:30:00-06:00", end: "2026-11-24T15:00:00-06:00" }
+  ]
+};
+
+const OPEN_ITEMS = [
+  { id: "o1", q: "", dyn: () => { const r = matchCalendar().rows.filter(x => x.type === "Training" || x.type === "Office hours"), miss = r.filter(x => !x.ev).length;
+      return miss ? miss + " of " + r.length + " training and office-hours sessions are not on the calendar with their planned titles yet"
+                  : "All " + r.length + " sessions are on the calendar. Add a facilitator and Teams link to each invite."; },
+    owner: "Nancy Selvanathan / Mayte Atienza", due: "Before the first session on Oct 26", done: false },
+  { id: "o2", q: "Confirm the required participant list for sales attestation", owner: "Twana Holmes / Laura Slayton", due: "Before the window opens Nov 11", done: false },
+  { id: "o3", q: "Confirm the new-hire audience size", owner: "Twana Holmes / Laura Slayton", due: "Due Nov 16", done: false },
+  { id: "o4", q: "Start reporting actual attendance, recording views and office-hours participation", owner: "Nancy Selvanathan", due: "From the first session on Oct 26", done: false }
+];
+
+const RISKS = [
+  { risk: "Training attendance or coverage gaps", impact: "Users may reach go-live without adequate preparation", mitigation: "Offer repeated full-feature sessions and office hours; use GPO Optimization and sales leadership to reinforce participation", owner: "Nancy / Brandon / Brian Schmidt / Justin", level: "Medium", status: "Open" },
+  { risk: "Sales attestation not completed by November 20", impact: "Business and sales readiness may not be fully evidenced", mitigation: "Track completion during the November 11-20 window and escalate outstanding responses", owner: "Twana Holmes / Laura Slayton", level: "Medium", status: "Open" },
+  { risk: "Late feedback before final incorporation on December 3", impact: "Limited time to incorporate validated changes before go-live", mitigation: "Capture feedback during training and office hours; prioritize launch-critical items", owner: "Mayte Atienza", level: "Medium", status: "Open" },
+  { risk: "PDF automation testing issues", impact: "PDF generation may not be stable by go-live", mitigation: "Complete PDF automation testing by December 3 and use the hypercare plan for escalations", owner: "Thit Lwin Oo", level: "Medium", status: "Open" },
+  { risk: "Post-go-live support demand remains elevated", impact: "User adoption and stabilization may take longer than planned", mitigation: "Continue weekly training and office hours for four weeks and review unresolved issues at stabilization", owner: "Nancy / Mayte / Thit", level: "Medium", status: "Open" }
+];
+
+const COMMS = [
+  { date: "Oct 19, 2026", name: "Rollout and communications approval", iso: "2026-10-19", title: "Power BI Tracker Comms: Rollout and Communications Approval", audience: "Rollout stakeholders", owner: "Nancy Selvanathan", status: "Scheduled" },
+  { date: "Oct 26, 2026", name: "Training program launch", iso: "2026-10-26", title: "Power BI Tracker Comms: Training Program Launch", audience: "All impacted Tracker users", owner: "Nancy Selvanathan / Mayte Atienza", status: "Scheduled" },
+  { date: "Nov 20, 2026", name: "Business and sales readiness update", iso: "2026-11-20", title: "Power BI Tracker Comms: Business and Sales Readiness Update", audience: "GPO Optimization and Sales Leadership", owner: "Nancy / Brandon / Brian Schmidt / Justin", status: "Scheduled" },
+  { date: "Nov 23, 2026", name: "Executive readiness summary", iso: "2026-11-23", title: "Power BI Tracker Comms: Executive Readiness Summary", audience: "Executive Sponsors and Sales Leadership", owner: "Nancy / Brandon / Brian Schmidt / Justin", status: "Scheduled" },
+  { date: "Dec 1, 2026", name: "Go-live communication", iso: "2026-12-01", title: "Power BI Tracker Comms: Go-Live Communication", audience: "All impacted Tracker users", owner: "Nancy Selvanathan", status: "Scheduled" },
+  { date: "Week of Dec 7, 2026", name: "Post-launch adoption update", iso: "2026-12-07", title: "Power BI Tracker Comms: Post-Launch Adoption Update", weekOf: true, audience: "Rollout stakeholders", owner: "Nancy Selvanathan", status: "Planned" },
+  { date: "Jan 8, 2027", name: "Adoption and stabilization summary", iso: "2027-01-08", title: "Power BI Tracker Comms: Adoption and Stabilization Summary", audience: "Executive Sponsors and rollout stakeholders", owner: "Nancy Selvanathan / Thit Lwin Oo", status: "Planned" }
+];
+
+const OWNERS = [
+  { title: "Executive sponsors", names: "Danyelle Brausen, Lydia Zheng", what: "Strategic oversight, readiness visibility, leadership alignment" },
+  { title: "Rollout leadership", names: "Brandon Peters, Brian Schmidt, Justin Taylor, Nancy Selvanathan", what: "Business, sales, executive and adoption readiness" },
+  { title: "Delivery and enablement", names: "Nancy Selvanathan, Mayte Atienza", what: "Design approval, delivery readiness, training program, launch preparation" },
+  { title: "Sales attestation and new-hire training", names: "Twana Holmes, Laura Slayton", what: "Sales Attestation Window (Nov 11 to 20) and New-Hire Training Incorporated (due Nov 16)" },
+  { title: "Support and hypercare", names: "Thit Lwin Oo", what: "PDF automation, hypercare plan, support escalation, stabilization" },
+  { title: "Sales leadership", names: "Lisa, Nick Rutledge, Brian Ballinger", what: "Adoption reinforcement, training promotion, field escalation" }
+];
+/* ================================================================== */
+
+const DAY = 864e5;
+const toDay = s => { const [y, m, d] = s.split("-").map(Number); return Math.round(Date.UTC(y, m - 1, d) / DAY); };
+const fmt = n => new Date(n * DAY).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+const fmtLong = n => new Date(n * DAY).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "UTC" });
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const plural = (n, w) => n + " " + w + (n === 1 ? "" : "s");
+const STATUSES = ["On Track", "Planned", "Scheduled", "At Risk", "Off Track", "Complete"];
+const cls = st => ({ "On Track": "on", "Complete": "on", "At Risk": "risk", "Off Track": "off" }[st] || "idle");
+
+const today = toDay(TODAY), planned = toDay(GO_LIVE);
+const MIN = toDay("2026-10-05"), MAX = toDay("2027-01-15");
+const pos = n => ((n - MIN) / (MAX - MIN)) * 100;
+const WALK_END = toDay("2027-01-08");
+const WALK_START = today < WALK_END ? Math.max(today, MIN) : MIN;
+const state = { sel: null, edit: false, filter: "gates", walk: WALK_START, playing: false, dirty: false, mf: "all" };
+const goLive = () => planned;
+const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+const activeRisks = () => RISKS.filter(r => r.status !== "Closed");
+function riskBreakdown() {
+  const a = activeRisks();
+  const lv = ["High", "Medium", "Low"].map(l => [l, a.filter(r => r.level === l).length]).filter(x => x[1]);
+  return !a.length ? "" : lv.length === 1 ? "all " + lv[0][0].toLowerCase() : lv.map(x => x[1] + " " + x[0].toLowerCase()).join(", ");
+}
+function riskSummary() {
+  const a = activeRisks();
+  return a.length ? plural(a.length, "risk") + " open (" + riskBreakdown() + ")" : "no open risks";
+}
+function daysPhrase() { const d = goLive() - today; return d > 0 ? plural(d, "day") + " to go" : d === 0 ? "go-live is today" : "live for " + plural(-d, "day"); }
+const markDirty = () => { if (!state.dirty) { state.dirty = true; $("#dirty").hidden = false; } };
+
+const ITEMS = LANES.flatMap(l => l.items.map(i => Object.assign(i, {
+  lane: l.id, group: l.group, s: toDay(i.date), e: toDay(i.end || i.date), done: i.criteria.map(() => false), leaderNote: ""
+})));
+ITEMS.find(i => i.launch).s = ITEMS.find(i => i.launch).e = planned;
+
+function effective(it) {
+  const base = { st: cls(it.status), why: "" };
+  if (it.launch || it.post || it.ongoing || it.status === "Complete") return base;
+  const gap = goLive() - it.e;
+  if (gap < 0) return { st: "off", why: "Lands " + plural(-gap, "day") + " after the go-live date." };
+  if (gap === 0) return { st: "risk", why: "Lands on go-live day with no buffer." };
+  return base;
+}
+const gates = () => ITEMS.filter(i => i.lane === "gates");
+
+function renderVerdict() {
+  const g = gates(), counts = { on: 0, idle: 0, risk: 0, off: 0 };
+  g.forEach(i => counts[effective(i).st]++);
+  const flagged = ITEMS.filter(i => ["off", "risk"].includes(effective(i).st));
+  const v = flagged.some(i => effective(i).st === "off") ? "off" : flagged.length ? "risk" : "on";
+  const word = { on: "on track", risk: "at risk", off: "off track" }[v];
+  const days = goLive() - today;
+  const openRisks = activeRisks().length;
+  const openItems = OPEN_ITEMS.filter(o => !o.done).length;
+  const total = g.length;
+  const nextGate = g.filter(i => i.e >= today && i.status !== "Complete").sort((a, b) => a.s - b.s)[0];
+  const live = days < 0;
+  const pill = '<span class="pill s-' + (live ? "on" : v) + '">' + (live ? "Live" : { on: "On track", risk: "At risk", off: "Off track" }[v]) + "</span>";
+  const card = (cls, lab, val, foot, go) => (go ? '<button class="kpi ' + cls + '" data-go="' + go + '">' : '<div class="kpi ' + cls + '">') +
+    '<span class="lab">' + lab + '</span><span class="val' + (cls.includes("next") ? " sm" : "") + '">' + val + '</span><span class="foot">' + foot + "</span>" + (go ? "</button>" : "</div>");
+  const el = $("#verdict");
+  el.dataset.s = v;
+  const mixBar = '<span class="mix" role="img" aria-label="Readiness gate status mix">' +
+    ["on", "idle", "risk", "off"].filter(k => counts[k]).map(k => '<span class="s-' + k + '" style="width:' + (counts[k] / total * 100) + '%"></span>').join("") + "</span>" +
+    '<span class="mixlegend">' + [["on", "on track"], ["idle", "planned"], ["risk", "at risk"], ["off", "off track"]].filter(x => counts[x[0]]).map(([k, l]) =>
+      '<span class="s-' + k + '"><i class="dot"></i>' + counts[k] + " " + l + "</span>").join("") + "</span>";
+  const nextHtml = nextGate
+    ? card("next kc-next", "Next gate", esc(nextGate.title), esc(fmt(nextGate.s) + (nextGate.e > nextGate.s ? " to " + fmt(nextGate.e) : "") + ", " +
+        (nextGate.s - today <= 0 ? "under way" : "in " + plural(nextGate.s - today, "day")) + ". Owner: " + nextGate.owners.join(", ") + "."), "gate:" + nextGate.id)
+    : card("next kc-next", "Next gate", "All gates reached", "Nothing left on the gate schedule.");
+  el.innerHTML =
+    card("status", "Go-live", esc(fmt(goLive())) + " " + pill, flagged.length ? plural(flagged.length, "item") + " would not fit before go-live" : "No gate or milestone is behind schedule") +
+    card("kc-days", live ? "Days since go-live" : days === 0 ? "Go-live" : "Days to go-live", days === 0 ? "Today" : String(Math.abs(days)), esc(fmtLong(goLive()) + ", " + GO_LIVE_TIME)) +
+    card("ready kc-ready", "Readiness gates on track", counts.on + " of " + total, mixBar) +
+    card("kc-risk", "Open risks", String(openRisks), openRisks ? esc(riskBreakdown()) : "None open", "risks") +
+    card("kc-open", "Items to close before launch", String(openItems), "Review open items", "open") +
+    nextHtml +
+    (flagged.length ? '<div class="flagbar s-' + (v === "off" ? "off" : "risk") + '"><b>Flagged by schedule:</b> ' +
+      flagged.map(i => esc(i.title) + " (" + esc(effective(i).why) + ")").join("; ") + "</div>" : "");
+  $("#strip").className = "strip s-" + (v === "on" ? "on" : v);
+  $("#strip").innerHTML = '<i class="dot"></i>' + (live ? "Live since " + fmt(goLive()) : "Go-live " + fmt(goLive()) + " is " + word + ", " + daysPhrase());
+  $("#openCount").textContent = openItems;
+  $("#riskCount").textContent = openRisks;
+  $("#riskSub").textContent = cap(riskSummary()) + ".";
+}
+
+function renderTimeline() {
+  const L = ITEMS.find(i => i.launch); L.s = L.e = goLive();
+  let months = "", grid = "";
+  for (let n = MIN; n <= MAX; n++) {
+    const dt = new Date(n * DAY);
+    if (dt.getUTCDate() === 1 || n === MIN) months += '<div class="month" style="left:' + pos(n) + '%">' + dt.toLocaleDateString("en-US", { month: "short", timeZone: "UTC" }) + "</div>";
+    if (dt.getUTCDay() === 1) grid += '<i class="gl" style="left:' + pos(n) + '%"></i>';
+  }
+  let labels = '<div class="tl-head">Gate or milestone</div>';
+  let tracks = '<div class="tl-head">' + months + '<div class="golive-tag" style="left:' + pos(goLive()) + '%"><i></i>Go-live ' + fmt(goLive()) + "</div></div>";
+  LANES.forEach(l => {
+    const rows = ITEMS.filter(i => i.lane === l.id && (state.filter === "all" || i.group === state.filter));
+    if (!rows.length) return;
+    if (state.filter === "all" || state.filter === "training") { labels += '<div class="lanehead">' + l.title + "</div>"; tracks += '<div class="rowtrack lane"></div>'; }
+    rows.forEach(it => {
+      const e = effective(it), sel = (it.id === state.sel ? " sel" : "") + (it.e < state.walk ? " past" : "");
+      labels += '<button class="rowlab s-' + e.st + sel + '" data-id="' + it.id + '"><b>' + esc(it.title) + '</b></button>';
+      const range = it.e > it.s;
+      const a11y = esc(it.title) + ", " + esc(it.status) + ", " + fmt(it.s) + (range ? " to " + fmt(it.e) : "") + (it.e < state.walk ? ", scheduled date has passed" : "");
+      const endPos = pos(range ? it.e + 1 : it.s), left = endPos > 78;
+      const text = (it.launch ? "Go-live " : "") + fmt(it.s) + (range ? " to " + fmt(it.e) : "");
+      const lab = left ? '<span class="dlab" style="right:' + (100 - pos(it.s) + 1.2) + '%">' + text + "</span>" : '<span class="dlab" style="left:' + (endPos + 1.2) + '%">' + text + "</span>";
+      const shape = range
+        ? '<button class="bar s-' + e.st + sel + '" data-id="' + it.id + '" style="left:' + pos(it.s) + "%;width:" + (pos(it.e + 1) - pos(it.s)) + '%" aria-label="' + a11y + '"></button>'
+        : '<button class="mark s-' + e.st + sel + (it.launch ? " golive" : "") + '" data-id="' + it.id + '" style="left:' + pos(it.s) + '%" aria-label="' + a11y + '"></button>';
+      tracks += '<div class="rowtrack">' + grid + shape + lab + "</div>";
+    });
+  });
+  tracks = '<div class="plot">' + tracks +
+    '<div class="vline today" style="left:' + pos(state.walk) + '%"></div><span class="vtag" style="left:' + pos(state.walk) + '%">' + (state.walk === today ? "Today" : fmt(state.walk)) + '</span>' +
+    '<div class="vline golive" style="left:' + pos(goLive()) + '%"></div></div>';
+  $("#tl").innerHTML = '<div class="tl-labels">' + labels + "</div>" + tracks;
+}
+
+const ul = (arr, cls2) => arr && arr.length ? '<ul class="' + (cls2 || "") + '">' + arr.map(x => "<li>" + esc(x) + "</li>").join("") + "</ul>" : "";
+function renderDetail() {
+  const it = ITEMS.find(x => x.id === state.sel);
+  const panel = $("#detailPanel");
+  if (!it) { panel.innerHTML = '<div class="hint">Select a gate or milestone.</div>'; return; }
+  const e = effective(it);
+  const flag = e.why ? '<p class="flag s-' + e.st + '"><b>Flagged by schedule.</b> ' + esc(e.why) + "</p>" : "";
+  const crow = TITLES[it.id] ? matchCalendar().rows.find(r => r.id === it.id) : null;
+  const calHtml = crow ? "<h4>Calendar</h4><div>Title to use: <b>" + esc(crow.title) + '</b></div><div class="meta">' + esc(statusText(crow)) + (crow.ev ? " (" + fmtDay(crow.ev.day) + ")" : "") + "</div>" : "";
+  const confirmed = it.done.filter(Boolean).length;
+  const when = fmtLong(it.s) + (it.e > it.s ? " to " + fmtLong(it.e) : "");
+  let crit;
+  if (state.edit) crit = '<ul class="checks">' + it.criteria.map((c, i) => '<li><input type="checkbox" id="c' + i + '" data-c="' + i + '"' + (it.done[i] ? " checked" : "") + '><label for="c' + i + '">' + esc(c) + "</label></li>").join("") + "</ul>";
+  else crit = '<ul class="checks">' + it.criteria.map((c, i) => "<li><span aria-hidden=\"true\">" + (it.done[i] ? "&#9745;" : "&#9744;") + "</span><span>" + esc(c) + "</span></li>").join("") + "</ul>";
+  let html = '<div class="detail"><h3>' + esc(it.title) + '</h3><span class="pill s-' + e.st + '">' + esc(it.status) + "</span>" + flag +
+    "<h4>When</h4><div>" + when + "</div><h4>Owners</h4><div>" + esc(it.owners.join(", ")) + "</div>" + calHtml +
+    "<h4>Criteria (" + confirmed + " of " + it.criteria.length + " confirmed)</h4>" + crit;
+  if (it.supports) html += "<h4>Supports</h4><div>" + esc(it.supports) + "</div>";
+  const tr = [].concat(it.training || [], it.office || []);
+  if (tr.length) html += "<h4>Training and office hours</h4>" + ul([(it.training || []).join(", "), (it.office || []).join(", ")].filter(Boolean));
+  if (it.deliverables) html += "<h4>Deliverables</h4>" + ul(it.deliverables);
+  if (it.risks) html += "<h4>Risk and mitigation</h4>" + ul(it.risks.map((r, i) => r + " \u2192 " + (it.mitigations ? it.mitigations[i] || "" : "")));
+  if (state.edit) {
+    html += '<h4><label for="eStatus">Status</label></h4><select id="eStatus">' + STATUSES.map(s => '<option' + (it.status === s ? " selected" : "") + ">" + s + "</option>").join("") + "</select>" +
+      '<h4><label for="eNote">Leadership note</label></h4><textarea id="eNote" placeholder="Context for this update">' + esc(it.leaderNote) + "</textarea>";
+  } else if (it.leaderNote) html += "<h4>Leadership note</h4><div class=\"note\">" + esc(it.leaderNote) + "</div>";
+  html += "</div>" + (state.edit ? '<div class="hint">Edit mode is on. Changes update the headline and timeline right away. They are not saved when you close the page, so copy the update first.</div>' : "");
+  panel.innerHTML = html;
+  if (state.edit) {
+    $("#eStatus").onchange = ev => { it.status = ev.target.value; markDirty(); refresh(true); };
+    $("#eNote").oninput = ev => { it.leaderNote = ev.target.value; markDirty(); };
+    panel.querySelectorAll("[data-c]").forEach(cb => cb.onchange = () => { it.done[+cb.dataset.c] = cb.checked; markDirty(); renderDetail(); });
+  }
+}
+
+const REMOVED = { risks: [], open: [] };
+function renderOpen() {
+  $("#openList").innerHTML = OPEN_ITEMS.map(o => '<li class="' + (o.done ? "done" : "") + '"><div><div class="q">' + esc(o.dyn ? o.dyn() : o.q) + '</div><div class="meta">' + esc(o.owner) + " &ndash; " + esc(o.due) + '</div></div>' +
+    '<div class="rowbtns"><button class="btn small" data-o="' + o.id + '">' + (o.done ? "Reopen" : "Mark closed") + "</button>" +
+    (state.edit ? '<button class="btn small" data-rm-open="' + o.id + '">Remove</button>' : "") + "</div></li>").join("");
+  $("#openAdd").hidden = !state.edit;
+}
+
+/* ---------- calendar match (exact titles) ---------- */
+const norm = t => String(t || "").toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9#]+/g, " ").trim();
+const fmtDay = n => new Date(n * DAY).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
+function fmtClock(iso) { if (!iso || iso.length < 16) return ""; let h = +iso.slice(11, 13); const m = iso.slice(14, 16); const ap = h >= 12 ? "PM" : "AM"; h = h % 12 || 12; return h + ":" + m + " " + ap; }
+function fmtMins(a, b) { if (!a || !b || a.length < 16 || b.length < 16) return ""; const m = Math.round((new Date(b) - new Date(a)) / 60000); return isFinite(m) && m > 0 ? m + " min" : ""; }
+const plannedLabel = r => r.weekOf ? "Week of " + fmt(r.s) : r.e > r.s ? fmt(r.s) + " to " + fmt(r.e) : fmtDay(r.s);
+
+function expectedMeetings() {
+  const rows = [];
+  ITEMS.forEach(it => {
+    const t = TITLES[it.id]; if (!t) return;
+    const type = it.id === "sales-attestation" ? "Assessment" : it.lane === "gates" ? "Gate" : "Milestone";
+    rows.push({ id: it.id, title: t, type, s: toDay(it.date), e: toDay(it.end || it.date), weekOf: false });
+  });
+  PRE_TRAINING_DATES.forEach((d, i) => rows.push({ title: TRAINING_TITLE(i + 1), type: "Training", s: toDay(d), e: toDay(d), weekOf: false }));
+  POST_WEEKS.forEach((d, i) => rows.push({ title: TRAINING_TITLE(11 + i), type: "Training", s: toDay(d), e: toDay(d) + 6, weekOf: true }));
+  OFFICE_HOURS.forEach((x, i) => rows.push({ title: OFFICE_TITLE(i + 1), type: "Office hours", s: toDay(x[0]), e: toDay(x[0]), weekOf: false }));
+  COMMS.forEach(c => rows.push({ title: c.title, type: "Communication", s: toDay(c.iso), e: toDay(c.iso) + (c.weekOf ? 6 : 0), weekOf: !!c.weekOf }));
+  return rows.sort((a, b) => a.s - b.s || a.title.localeCompare(b.title));
+}
+function matchCalendar() {
+  const rows = expectedMeetings();
+  const ev = CALENDAR.events.map(e => Object.assign({}, e, { day: toDay(e.start.slice(0, 10)), key: norm(e.subject) }));
+  const dist = (d, r) => d < r.s ? r.s - d : d > r.e ? d - r.e : 0;
+  rows.forEach(r => {
+    const k = norm(r.title);
+    const c = ev.filter(e => e.key === k).sort((a, b) => dist(a.day, r) - dist(b.day, r))[0];
+    if (!c) { r.status = "missing"; return; }
+    r.ev = c; r.diff = c.day < r.s ? c.day - r.s : c.day > r.e ? c.day - r.e : 0; r.status = r.diff === 0 ? "ok" : "diff";
+  });
+  const keys = new Set(rows.map(r => norm(r.title)));
+  const unmatched = ev.filter(e => !rows.some(r => r.ev === e)).map(e => {
+    let hint = "The title is not in the plan. Check it against the title list.";
+    if (keys.has(e.key)) hint = "Another invite already uses this title.";
+    else if (e.key.startsWith("power bi tracker training")) hint = "Add the session number, for example " + TRAINING_TITLE(1) + ".";
+    else if (e.key.startsWith("power bi tracker office hours")) hint = "Add the session number, for example " + OFFICE_TITLE(1) + ".";
+    return { e, hint };
+  });
+  return { rows, unmatched };
+}
+function statusText(r) {
+  if (r.status === "missing") return "Not on calendar";
+  if (r.status === "ok") return r.e > r.s ? "Inside the planned window" : "On the planned date";
+  return "Date differs: " + plural(Math.abs(r.diff), "day") + (r.diff < 0 ? " before" : " after") + " plan";
+}
+function calCell(r) {
+  if (!r.ev) return '<span class="meta">&ndash;</span>';
+  const e = r.ev, t = [fmtClock(e.start), fmtMins(e.start, e.end)].filter(Boolean).join(", ");
+  const extra = [e.organizer ? "Organizer: " + e.organizer : "", "link" in e ? (e.link ? "Teams link added" : "No Teams link") : ""].filter(Boolean).join("; ");
+  return esc(fmtDay(e.day) + (t ? ", " + t : "")) + (extra ? '<div class="meta">' + esc(extra) + "</div>" : "");
+}
+function renderMatch(m) {
+  m = m || matchCalendar();
+  const found = m.rows.filter(r => r.ev).length, miss = m.rows.length - found, diff = m.rows.filter(r => r.status === "diff").length;
+  $("#matchSub").textContent = found + " of " + m.rows.length + " planned meetings found by exact title. " + miss + " not on the calendar yet, " + diff + " on a different date.";
+  const rows = m.rows.filter(r => state.mf === "all" || r.status === state.mf);
+  $("#matchRows").innerHTML = rows.length ? rows.map(r =>
+    "<tr><td><b>" + esc(r.title) + "</b></td><td>" + r.type + "</td><td>" + esc(plannedLabel(r)) + "</td><td>" + calCell(r) +
+    '</td><td><span class="pill s-' + { ok: "on", diff: "risk", missing: "idle" }[r.status] + '">' + esc(statusText(r)) + "</span></td></tr>").join("")
+    : '<tr><td colspan="5" class="meta">Nothing in this view.</td></tr>';
+  $("#unmatched").innerHTML = m.unmatched.length
+    ? '<div class="unm"><b>On the calendar but not matched to the plan (' + m.unmatched.length + ").</b><ul>" +
+      m.unmatched.map(u => "<li>" + esc(u.e.subject) + " on " + esc(fmtDay(u.e.day)) + ". " + esc(u.hint) + "</li>").join("") + "</ul></div>" : "";
+}
+function renderCoverage() {
+  const m = matchCalendar(), rows = m.rows;
+  const groups = [["Readiness gates", r => r.type === "Gate" || r.type === "Assessment"], ["Milestones", r => r.type === "Milestone"],
+    ["Trainings", r => r.type === "Training"], ["Office hours", r => r.type === "Office hours"], ["Communications", r => r.type === "Communication"]];
+  const pips = g => '<div class="pips" aria-hidden="true">' + g.map(r => '<i class="' + (r.status === "ok" ? "f" : r.status === "diff" ? "d" : "") + '"></i>').join("") + "</div>";
+  $("#cov").innerHTML = groups.map(([label, f]) => { const g = rows.filter(f); return '<div class="covrow"><b>' + label + "</b><div>" + pips(g) + "<span>" + g.filter(r => r.ev).length + " of " + g.length + " on the calendar</span></div></div>"; }).join("") +
+    '<div class="meta" style="padding-top:10px">' + (CALENDAR.syncedAt ? "Calendar last synced " + fmt(toDay(CALENDAR.syncedAt)) + "." : "Calendar data is from the source dashboard and has not been synced from Outlook yet.") +
+    " Meetings are matched by exact title. Green = on the planned date, amber = found on a different date, grey = not found.</div>";
+  renderMatch(m);
+}
+
+const LEVELS = ["Low", "Medium", "High"], RISK_STATUS = ["Open", "Mitigating", "Closed"], COMM_STATUS = ["Planned", "Scheduled", "Sent"];
+const lvCls = l => ({ High: "off", Medium: "risk", Low: "idle" }[l] || "idle");
+const opts = (arr, cur) => arr.map(x => "<option" + (x === cur ? " selected" : "") + ">" + x + "</option>").join("");
+function renderTables() {
+  $("#riskRows").innerHTML = RISKS.map((r, i) => {
+    const cell = state.edit
+      ? '<select aria-label="Risk level" data-rl="' + i + '">' + opts(LEVELS, r.level) + '</select> <select aria-label="Risk status" data-rs="' + i + '">' + opts(RISK_STATUS, r.status) + '</select> <button class="btn small" data-rm-risk="' + i + '">Remove</button>'
+      : '<span class="pill s-' + lvCls(r.level) + '">' + esc(r.level) + "</span> " + esc(r.status);
+    return "<tr" + (r.status === "Closed" ? ' style="opacity:.55"' : "") + "><td><b>" + esc(r.risk) + "</b></td><td>" + esc(r.impact) + "</td><td>" + esc(r.mitigation) + "</td><td>" + esc(r.owner) + "</td><td>" + cell + "</td></tr>";
+  }).join("");
+  $("#comRows").innerHTML = COMMS.map((c, i) => {
+    const cell = state.edit ? '<select aria-label="Communication status" data-cs="' + i + '">' + opts(COMM_STATUS, c.status) + "</select>"
+      : '<span class="pill s-' + (c.status === "Sent" ? "on" : "idle") + '">' + esc(c.status) + "</span>";
+    return "<tr><td>" + esc(c.date) + "</td><td><b>" + esc(c.name) + "</b></td><td>" + esc(c.audience) + "</td><td>" + esc(c.owner) + "</td><td>" + cell + "</td></tr>";
+  }).join("");
+  $("#riskAdd").hidden = !state.edit;
+  $("#owners").innerHTML = OWNERS.map(o => "<div><b>" + esc(o.title) + "</b>" + esc(o.names) + "<br><small>" + esc(o.what) + "</small></div>").join("");
+}
+
+function refresh(detail) { renderVerdict(); renderTimeline(); renderOpen(); renderSummary(); if (detail) renderDetail(); }
+
+document.addEventListener("change", ev => {
+  const t = ev.target, attr = ["data-rl", "data-rs", "data-cs"].find(a => t.hasAttribute && t.hasAttribute(a));
+  if (!attr) return;
+  const idx = +t.getAttribute(attr);
+  if (attr === "data-rl") RISKS[idx].level = t.value;
+  else if (attr === "data-rs") RISKS[idx].status = t.value;
+  else COMMS[idx].status = t.value;
+  markDirty(); renderTables(); refresh(false);
+  const again = document.querySelector("[" + attr + '="' + idx + '"]'); if (again) again.focus();
+});
+document.addEventListener("click", ev => {
+  const row = ev.target.closest("[data-id]");
+  if (row) { state.sel = row.dataset.id; renderTimeline(); renderDetail(); return; }
+  const o = ev.target.closest("[data-o]");
+  if (o) { const x = OPEN_ITEMS.find(i => i.id === o.dataset.o); x.done = !x.done; markDirty(); refresh(false); return; }
+  const mc = ev.target.closest(".mchip");
+  if (mc) { state.mf = mc.dataset.mf; document.querySelectorAll(".mchip").forEach(c => c.setAttribute("aria-pressed", c === mc)); renderMatch(); return; }
+  const chip = ev.target.closest(".chip");
+  if (chip) {
+    state.filter = chip.dataset.f;
+    document.querySelectorAll(".chip").forEach(c => c.setAttribute("aria-pressed", c === chip));
+    renderTimeline();
+  }
+});
+$("#copyTitles").onclick = () => {
+  const t = matchCalendar().rows.map(r => r.title + "\t" + plannedLabel(r)).join("\n");
+  const done = () => toast("Titles copied. Paste them into a spreadsheet or email.");
+  if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(t).then(done, () => fallback(t, done)); else fallback(t, done);
+};
+$("#editBtn").onclick = ev => {
+  state.edit = !state.edit;
+  ev.currentTarget.setAttribute("aria-pressed", state.edit);
+  ev.currentTarget.textContent = state.edit ? "Done editing" : "Edit statuses";
+  renderDetail(); renderTables(); renderOpen();
+};
+
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 2400); }
+function fallback(t, cb) {
+  const a = document.createElement("textarea"); a.value = t; document.body.appendChild(a); a.select();
+  try { document.execCommand("copy"); cb(); } catch (e) { toast("Copy failed. Select the text manually."); }
+  a.remove();
+}
+function copyText(t, msg) {
+  const done = () => toast(msg);
+  if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(t).then(done, () => fallback(t, done)); else fallback(t, done);
+}
+$("#copyBtn").onclick = () => copyText(buildSummary(), "Leadership summary copied. Paste it into an email.");
+$("#copySummary").onclick = $("#copyBtn").onclick;
+
+
+/* ---------- walkthrough ---------- */
+let walkTimer = null;
+function dayEvents(n) {
+  const ev = [];
+  ITEMS.forEach(it => {
+    const gate = it.lane === "gates";
+    if (it.launch) { if (it.s === n) ev.push({ t: "Go-live: Power BI Tracker is released", gate: true, id: it.id }); return; }
+    if (it.e > it.s) {
+      if (it.s === n) ev.push({ t: "Begins: " + it.title, gate, id: it.id });
+      if (it.e === n) ev.push({ t: "Ends: " + it.title, gate: false, id: it.id });
+    } else if (it.s === n) ev.push({ t: (gate ? "Gate: " : "Due: ") + it.title, gate, id: it.id });
+  });
+  PRE_TRAINING_DATES.forEach((d, i) => { if (toDay(d) === n) ev.push({ t: "Training #" + (i + 1) }); });
+  OFFICE_HOURS.forEach((x, i) => { if (toDay(x[0]) === n) ev.push({ t: "Office Hours #" + (i + 1) + " (sales team)" }); });
+  COMMS.forEach(c => { if (c.date.startsWith(fmt(n) + ",")) ev.push({ t: "Communication: " + c.name }); });
+  return ev.sort((a, b) => (b.gate ? 1 : 0) - (a.gate ? 1 : 0));
+}
+function renderWalk() {
+  const n = state.walk, ev = dayEvents(n), g = gates();
+  $("#walkDate").textContent = fmtLong(n);
+  $("#walkScrub").value = n;
+  const btn = $("#playBtn");
+  btn.textContent = state.playing ? "Pause" : (n >= WALK_END ? "Replay" : "Play walkthrough");
+  btn.setAttribute("aria-pressed", state.playing);
+  $("#walkEvents").innerHTML = ev.length
+    ? "<ul>" + ev.map(e => '<li class="' + (e.gate ? "gate" : "") + '">' + esc(e.t) + "</li>").join("") + "</ul>"
+    : '<span class="meta">Nothing scheduled this day.</span>';
+  const left = goLive() - n;
+  const dayTxt = left > 0 ? "<b>" + plural(left, "day") + "</b> to go-live" : left === 0 ? "<b>Go-live day</b>" : "<b>" + plural(-left, "day") + "</b> since go-live";
+  const cnt = arr => arr.filter(d => toDay(d) <= n).length;
+  $("#walkStats").innerHTML = "<span>" + dayTxt + "</span>" +
+    "<span>Readiness items reached: <b>" + g.filter(i => i.s <= n).length + " of " + g.length + "</b></span>" +
+    "<span>Trainings scheduled: <b>" + cnt(PRE_TRAINING_DATES) + " of " + PRE_TRAINING_DATES.length + "</b></span>" +
+    "<span>Office hours scheduled: <b>" + cnt(OH_ALL) + " of " + OH_ALL.length + "</b></span>";
+}
+function setWalk(n, auto) {
+  state.walk = n;
+  if (auto) {
+    const ev = dayEvents(n), pick = ev.find(e => e.id && e.gate) || ev.find(e => e.id);
+    if (pick) { state.sel = pick.id; renderDetail(); }
+  }
+  renderTimeline(); renderWalk();
+}
+function stopPlay() { clearTimeout(walkTimer); if (state.playing) { state.playing = false; renderWalk(); } }
+function tick() {
+  if (!state.playing) return;
+  if (state.walk >= WALK_END) { stopPlay(); return; }
+  setWalk(state.walk + 1, true);
+  const ev = dayEvents(state.walk), sp = +$("#walkSpeed").value;
+  let wait = ev.length ? 900 : 130;
+  if (ev.some(e => e.gate) && $("#walkPause").checked) wait = 3000;
+  walkTimer = setTimeout(tick, wait / sp);
+}
+function startPlay() {
+  if (state.walk >= WALK_END) setWalk(WALK_START, false);
+  state.playing = true; renderWalk();
+  walkTimer = setTimeout(tick, 300);
+}
+$("#walkScrub").min = MIN; $("#walkScrub").max = MAX;
+$("#playBtn").onclick = () => state.playing ? stopPlay() : startPlay();
+$("#walkReset").onclick = () => { stopPlay(); setWalk(WALK_START, false); };
+$("#walkScrub").addEventListener("input", ev => { stopPlay(); setWalk(+ev.target.value, false); });
+
+/* ---------- save and load updates ---------- */
+function snapshot() {
+  const items = {}; ITEMS.forEach(i => items[i.id] = { status: i.status, done: i.done, note: i.leaderNote });
+  const open = {}; OPEN_ITEMS.forEach(o => open[o.id] = o.done);
+  return { app: "pbi-tracker-readiness", version: 1, publishVersion: state.version, updatedBy: UPDATED_BY, savedAt: new Date().toISOString(), items, open,
+    risks: RISKS.map(r => ({ risk: r.risk, level: r.level, status: r.status })),
+    comms: COMMS.map(c => ({ name: c.name, status: c.status })),
+    addedRisks: RISKS.filter(r => r.custom).map(r => ({ risk: r.risk, impact: r.impact, mitigation: r.mitigation, owner: r.owner, level: r.level, status: r.status })),
+    removedRisks: REMOVED.risks.slice(),
+    addedOpen: OPEN_ITEMS.filter(o => o.custom).map(o => ({ id: o.id, q: o.q, owner: o.owner, due: o.due, done: o.done })),
+    removedOpen: REMOVED.open.slice() };
+}
+function applySnapshot(d) {
+  if (!d || d.app !== "pbi-tracker-readiness") throw new Error("That file is not a saved dashboard update.");
+  let n = 0;
+  (d.removedRisks || []).forEach(name => { const i = RISKS.findIndex(r => r.risk === name); if (i >= 0) RISKS.splice(i, 1); if (!REMOVED.risks.includes(name)) REMOVED.risks.push(name); n++; });
+  (d.removedOpen || []).forEach(id => { const i = OPEN_ITEMS.findIndex(o => o.id === id); if (i >= 0) OPEN_ITEMS.splice(i, 1); if (!REMOVED.open.includes(id)) REMOVED.open.push(id); n++; });
+  (d.addedRisks || []).forEach(r => { if (r && r.risk && !RISKS.some(x => x.risk === r.risk)) { RISKS.push(Object.assign({ impact: "", mitigation: "", owner: "", level: "Medium", status: "Open" }, r, { custom: true })); n++; } });
+  (d.addedOpen || []).forEach(o => { if (o && o.id && o.q && !OPEN_ITEMS.some(x => x.id === o.id)) { OPEN_ITEMS.push({ id: o.id, q: o.q, owner: o.owner || "", due: o.due || "", done: !!o.done, custom: true }); n++; } });
+  Object.entries(d.items || {}).forEach(([id, v]) => {
+    const it = ITEMS.find(x => x.id === id); if (!it || !v) return;
+    if (STATUSES.includes(v.status)) it.status = v.status;
+    if (Array.isArray(v.done) && v.done.length === it.done.length) it.done = v.done.map(Boolean);
+    if (typeof v.note === "string") it.leaderNote = v.note;
+    n++;
+  });
+  Object.entries(d.open || {}).forEach(([id, v]) => { const o = OPEN_ITEMS.find(x => x.id === id); if (o) { o.done = !!v; n++; } });
+  (d.risks || []).forEach(v => { const r = RISKS.find(x => x.risk === v.risk); if (r) { if (LEVELS.includes(v.level)) r.level = v.level; if (RISK_STATUS.includes(v.status)) r.status = v.status; n++; } });
+  (d.comms || []).forEach(v => { const c = COMMS.find(x => x.name === v.name); if (c && COMM_STATUS.includes(v.status)) { c.status = v.status; n++; } });
+  return n;
+}
+const STORE_KEY = "pbi-tracker-readiness-v1";
+function storeSave(snap) { try { localStorage.setItem(STORE_KEY, JSON.stringify(snap || snapshot())); return true; } catch (e) { return false; } }
+function storeLoad() { try { const r = localStorage.getItem(STORE_KEY); return r ? JSON.parse(r) : null; } catch (e) { return null; } }
+$("#saveBtn").onclick = () => {
+  const snap = snapshot();
+  const stored = storeSave(snap);
+  const blob = new Blob([JSON.stringify(snap, null, 2)], { type: "application/json" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+  a.download = "pbi-tracker-readiness-" + TODAY + ".json";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  state.dirty = false; $("#dirty").hidden = true;
+  state.stampAt = snap.savedAt; state.unpublished = true; renderStamp(); renderSummary();
+  toast(stored ? "Saved in this browser. A backup file was also downloaded." : "Browser storage is not available here. A backup file was downloaded. Use Load changes to restore it.");
+};
+$("#loadBtn").onclick = () => $("#loadFile").click();
+$("#loadFile").addEventListener("change", ev => {
+  const f = ev.target.files && ev.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      const n = applySnapshot(JSON.parse(r.result));
+      const loadedSnap = snapshot(); storeSave(loadedSnap);
+      state.stampAt = loadedSnap.savedAt; state.unpublished = true; renderStamp();
+      state.dirty = false; $("#dirty").hidden = true;
+      renderTables(); refresh(true);
+      toast("Loaded " + plural(n, "update") + " from " + f.name + ".");
+    } catch (e) { toast(e.message || "That file could not be read."); }
+  };
+  r.readAsText(f);
+  ev.target.value = "";
+});
+$("#resetBtn").onclick = () => {
+  if (!window.confirm("Clear your saved changes and go back to the plan in this file?")) return;
+  try { localStorage.removeItem(STORE_KEY); } catch (e) {}
+  state.dirty = false; location.reload();
+};
+window.addEventListener("beforeunload", ev => { if (state.dirty) { ev.preventDefault(); ev.returnValue = ""; } });
+
+/* ---------- publish: download a copy of this page with your current statuses built in ---------- */
+$("#publishBtn").onclick = () => {
+  state.version += 1;
+  const snap = snapshot();
+  const baked = "const BAKED" + " = " + JSON.stringify(snap).replace(/<\//g, "<\\/") + ";";
+  const html = PRISTINE.replace(new RegExp("const " + "BAKED = [^\\n]*;"), () => baked);
+  const blob = new Blob([html], { type: "text/html" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+  a.download = "power-bi-tracker-launch-readiness.html";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  storeSave(snap);
+  state.stampAt = snap.savedAt; state.unpublished = false;
+  state.dirty = false; $("#dirty").hidden = true;
+  renderStamp(); renderSummary();
+  toast("Version " + state.version + " downloaded. Upload it over the old file so everyone sees your changes.");
+};
+
+/* ---------- add and remove risks and open items (edit mode) ---------- */
+const readVal = id => { const el = $(id); const v = (el.value || "").trim(); return v; };
+const clearInputs = ids => ids.forEach(id => { $(id).value = ""; });
+$("#addOpenBtn").onclick = () => {
+  const q = readVal("#addOpenText");
+  if (!q) { toast("Describe the item first."); return; }
+  OPEN_ITEMS.push({ id: "c" + Date.now(), q, owner: readVal("#addOpenOwner") || "Unassigned", due: readVal("#addOpenDue") || "No due date", done: false, custom: true });
+  clearInputs(["#addOpenText", "#addOpenOwner", "#addOpenDue"]);
+  markDirty(); refresh(false); toast("Item added.");
+};
+$("#addRiskBtn").onclick = () => {
+  const risk = readVal("#addRiskText");
+  if (!risk) { toast("Describe the risk first."); return; }
+  if (RISKS.some(r => r.risk === risk)) { toast("A risk with that name already exists."); return; }
+  RISKS.push({ risk, impact: readVal("#addRiskImpact"), mitigation: readVal("#addRiskMit"), owner: readVal("#addRiskOwner") || "Unassigned", level: $("#addRiskLevel").value || "Medium", status: "Open", custom: true });
+  clearInputs(["#addRiskText", "#addRiskImpact", "#addRiskMit", "#addRiskOwner"]);
+  markDirty(); renderTables(); refresh(false); toast("Risk added.");
+};
+document.addEventListener("click", ev => {
+  const ro = ev.target.closest("[data-rm-open]");
+  if (ro) {
+    const i = OPEN_ITEMS.findIndex(o => o.id === ro.dataset.rmOpen); if (i < 0) return;
+    if (!window.confirm("Remove this item?")) return;
+    const o = OPEN_ITEMS.splice(i, 1)[0]; if (!o.custom) REMOVED.open.push(o.id);
+    markDirty(); refresh(false); return;
+  }
+  const rr = ev.target.closest("[data-rm-risk]");
+  if (rr) {
+    const i = +rr.dataset.rmRisk; if (!RISKS[i]) return;
+    if (!window.confirm("Remove this risk?")) return;
+    const r = RISKS.splice(i, 1)[0]; if (!r.custom) REMOVED.risks.push(r.risk);
+    markDirty(); renderTables(); refresh(false);
+  }
+});
+
+/* ---------- show or hide the editing tools (Cmd+Shift+A on Mac, Ctrl+Shift+A on Windows) ---------- */
+function setEditorUI(on) {
+  state.unlocked = !!on;
+  document.querySelectorAll(".editor-only").forEach(el => { el.hidden = !on; });
+  $("#dirty").hidden = !(on && state.dirty);
+  if (!on && state.edit) {
+    state.edit = false;
+    const b = $("#editBtn"); b.setAttribute("aria-pressed", false); b.textContent = "Edit statuses";
+    renderDetail(); renderTables(); renderOpen();
+  }
+}
+document.addEventListener("keydown", ev => {
+  if ((ev.metaKey || ev.ctrlKey) && ev.shiftKey && !ev.altKey && (ev.code === "KeyA" || String(ev.key).toLowerCase() === "a")) {
+    ev.preventDefault();
+    setEditorUI(!state.unlocked);
+    toast(state.unlocked ? "Editing tools shown. Press the shortcut again to hide them." : "Editing tools hidden.");
+  }
+});
+
+$("#verdict").addEventListener("click", ev => {
+  const c = ev.target.closest("[data-go]"); if (!c) return;
+  const go = c.dataset.go;
+  if (go.indexOf("gate:") === 0) { state.sel = go.slice(5); showTab("overview"); renderTimeline(); renderDetail(); }
+  else showTab(go);
+});
+
+/* ---------- color theme: Auto (follows your computer), Light, Dark ---------- */
+const THEME_KEY = "pbi-tracker-theme";
+const THEMES = ["auto", "light", "dark"];
+function applyTheme(t) {
+  if (t === "auto") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", t);
+  $("#themeBtn").textContent = "Theme: " + t.charAt(0).toUpperCase() + t.slice(1);
+  state.theme = t;
+}
+$("#themeBtn").onclick = () => {
+  const next = THEMES[(THEMES.indexOf(state.theme) + 1) % THEMES.length];
+  applyTheme(next);
+  try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
+};
+let startTheme = "auto";
+try { const t = localStorage.getItem(THEME_KEY); if (THEMES.includes(t)) startTheme = t; } catch (e) {}
+applyTheme(startTheme);
+
+/* ---------- version stamp ---------- */
+function stampText() {
+  if (!state.stampAt) return "Version " + state.version + ". No updates published yet.";
+  const when = new Date(state.stampAt).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" });
+  return "Version " + state.version + ". Last updated by " + UPDATED_BY + ", " + when + (state.unpublished ? " (not yet published)" : "") + ".";
+}
+function renderStamp() { $("#stamp").textContent = stampText(); }
+
+/* ---------- leadership summary ---------- */
+function buildSummary() {
+  const g = gates(), counts = { on: 0, idle: 0, risk: 0, off: 0 };
+  g.forEach(i => counts[effective(i).st]++);
+  const flagged = ITEMS.filter(i => ["off", "risk"].includes(effective(i).st));
+  const v = flagged.some(i => effective(i).st === "off") ? "off" : flagged.length ? "risk" : "on";
+  const word = { on: "on track", risk: "at risk", off: "off track" }[v];
+  const days = goLive() - today;
+  const headline = days < 0 ? "Power BI Tracker went live on " + fmt(goLive()) : "Go-live on " + fmt(goLive()) + " is " + word;
+  const firsts = SUMMARY_TO.map(n => n.split(" ")[0]);
+  const greet = firsts.length > 1 ? firsts.slice(0, -1).join(", ") + " and " + firsts[firsts.length - 1] : firsts[0];
+  const when = i => i.e > i.s ? fmt(i.s) + " to " + fmt(i.e) : fmt(i.s);
+  const L = [];
+  L.push("Subject: Power BI Tracker rollout: readiness update (" + fmt(today) + "). " + headline);
+  L.push("To: " + SUMMARY_TO.join(", "));
+  L.push("", "Hello " + greet + ",", "");
+  let p = headline + (days > 0 ? ", " + plural(days, "day") + " from today" : days === 0 ? " (today)" : "") + ". " +
+    counts.on + " of " + g.length + " readiness gates are on track and " + counts.idle + " are planned. " +
+    (counts.risk ? counts.risk + " at risk. " : "") + (counts.off ? counts.off + " off track. " : "");
+  p += flagged.length ? plural(flagged.length, "item") + " would not fit before go-live: " + flagged.map(i => i.title).join("; ") + "." : "No gate or milestone is behind schedule.";
+  L.push(p);
+  const nextGate = g.filter(i => i.e >= today && i.status !== "Complete").sort((a, b) => a.s - b.s)[0];
+  if (nextGate) L.push("", "Next gate: " + nextGate.title + ", " + when(nextGate) + " (" + (nextGate.s - today <= 0 ? "under way" : "in " + plural(nextGate.s - today, "day")) + "). Owner: " + nextGate.owners.join(", ") + ".");
+  L.push("", "Readiness gates");
+  g.forEach(i => { const e = effective(i); L.push("- " + i.title + ", " + when(i) + ": " + i.status + (e.why ? ". " + e.why : "") + " (" + i.owners.join(", ") + ")" + (i.leaderNote ? ". Note: " + i.leaderNote : "")); });
+  const ar = activeRisks();
+  L.push("", cap(riskSummary()));
+  ar.forEach(r => L.push("- " + r.risk + " (" + r.level + ", " + r.status + "; " + r.owner + ")"));
+  const open = OPEN_ITEMS.filter(o => !o.done);
+  L.push("", "To close before launch");
+  if (open.length) open.forEach(o => L.push("- " + (o.dyn ? o.dyn() : o.q) + " (" + o.owner + "; " + o.due + ")")); else L.push("- Nothing open.");
+  const m = matchCalendar(), found = m.rows.filter(r => r.ev).length, diff = m.rows.filter(r => r.status === "diff").length;
+  L.push("", "Calendar");
+  L.push(CALENDAR.syncedAt
+    ? "- " + found + " of " + m.rows.length + " planned meetings are on the calendar by exact title (" + (m.rows.length - found) + " not yet, " + diff + " on a different date). Last synced " + fmt(toDay(CALENDAR.syncedAt)) + "."
+    : "- The calendar has not been synced from Outlook yet.");
+  L.push("", "Thanks,", UPDATED_BY, "", stampText());
+  return L.join("\n");
+}
+function renderSummary() { $("#sumText").textContent = buildSummary(); }
+
+const TABS = [...document.querySelectorAll(".tab")];
+function showTab(id, focus) {
+  if (id !== "overview") stopPlay();
+  TABS.forEach(t => { const on = t.dataset.tab === id; t.setAttribute("aria-selected", on); t.tabIndex = on ? 0 : -1; if (on && focus) t.focus(); });
+  document.querySelectorAll(".tabpanel").forEach(p => p.hidden = p.id !== "tab-" + id);
+  try { history.replaceState(null, "", "#" + id); } catch (e) {}
+  window.scrollTo({ top: 0 });
+}
+TABS.forEach((t, i) => {
+  t.addEventListener("click", () => showTab(t.dataset.tab));
+  t.addEventListener("keydown", ev => {
+    const k = { ArrowRight: 1, ArrowLeft: -1 }[ev.key];
+    if (k) { ev.preventDefault(); showTab(TABS[(i + k + TABS.length) % TABS.length].dataset.tab, true); }
+    if (ev.key === "Home") { ev.preventDefault(); showTab(TABS[0].dataset.tab, true); }
+    if (ev.key === "End") { ev.preventDefault(); showTab(TABS[TABS.length - 1].dataset.tab, true); }
+  });
+});
+const startTab = (location.hash || "").slice(1);
+if (TABS.some(t => t.dataset.tab === startTab)) showTab(startTab);
+
+setEditorUI(false);
+if (location.hash === "#edit") setEditorUI(true);
+let restoredAt = null, bakedAt = null;
+state.version = VERSION_BASE; state.stampAt = null; state.unpublished = false;
+if (BAKED) { try { applySnapshot(BAKED); bakedAt = BAKED.savedAt || null; state.version = BAKED.publishVersion || VERSION_BASE; state.stampAt = bakedAt; } catch (e) { console.warn(e); } }
+{
+  const saved = storeLoad();
+  const newer = saved && (!BAKED || !BAKED.savedAt || (saved.savedAt && saved.savedAt > BAKED.savedAt));
+  if (newer) {
+    try {
+      applySnapshot(saved); restoredAt = saved.savedAt || "restored";
+      state.version = Math.max(state.version, saved.publishVersion || 0); state.stampAt = saved.savedAt || state.stampAt; state.unpublished = true;
+    } catch (e) { console.warn(e); }
+  }
+}
+$("#asof").textContent = fmt(today);
+renderStamp();
+state.sel = (gates().filter(i => i.e >= today).sort((a, b) => a.s - b.s)[0] || gates()[0]).id;
+renderTables(); renderCoverage(); refresh(true); renderWalk();
+if (restoredAt) toast("Restored your saved changes.");
+</script></body></html>
