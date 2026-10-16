@@ -1210,13 +1210,11 @@ function buildSummary() {
   const word = { on: "on track", risk: "at risk", off: "off track" }[v];
   const days = goLive() - today;
   const headline = days < 0 ? "Power BI Tracker went live on " + fmt(goLive()) : "Go-live on " + fmt(goLive()) + " is " + word;
-  const firsts = SUMMARY_TO.map(n => n.split(" ")[0]);
-  const greet = firsts.length > 1 ? firsts.slice(0, -1).join(", ") + " and " + firsts[firsts.length - 1] : firsts[0];
   const when = i => i.e > i.s ? fmt(i.s) + " to " + fmt(i.e) : fmt(i.s);
   const L = [];
   L.push("Subject: Power BI Tracker rollout: readiness update (" + fmt(today) + "). " + headline);
   L.push("To: " + SUMMARY_TO.join(", "));
-  L.push("", "Hello " + greet + ",", "");
+  L.push("", "Hello Leadership Team,", "");
   let p = headline + (days > 0 ? ", " + plural(days, "day") + " from today" : days === 0 ? " (today)" : "") + ". " +
     counts.on + " of " + g.length + " readiness gates are on track and " + counts.idle + " are planned. " +
     (counts.risk ? counts.risk + " at risk. " : "") + (counts.off ? counts.off + " off track. " : "");
