@@ -1466,6 +1466,27 @@ th { background: var(--head-bg); }
 .detail ul.sessions li { margin: 3px 0; }
 .s-sent { --c: var(--accent); }
 .pips i.p { background: var(--idle); }
+
+/* publish to GitHub panel */
+pre.cmd { margin: 0; padding: 10px 14px; background: var(--bg); border-top: 1px solid var(--line); white-space: pre-wrap; word-break: break-all; font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.gitsteps { padding: 8px 14px 12px; border-top: 1px solid var(--line); font-size: 13px; }
+.gitsteps summary { cursor: pointer; font-weight: 600; margin-bottom: 6px; }
+.gitsteps pre.cmd { border: 1px solid var(--line); border-radius: 4px; margin-bottom: 8px; }
+@media print { #gitPanel { display: none !important; } }
+
+/* who was invited */
+.linkbtn { all: unset; cursor: pointer; color: var(--accent); text-decoration: underline; }
+.linkbtn:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.modal { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); display: flex; align-items: center; justify-content: center; z-index: 30; }
+.modal[hidden] { display: none; }
+.modal .box { background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; width: min(540px, 92vw); max-height: 80vh; overflow: auto; }
+.modal header { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--head-bg); }
+.modal h2 { font-size: 17px; }
+#whoBody { padding: 10px 14px 14px; }
+#whoBody h4 { margin: 10px 0 4px; font-size: 12px; color: var(--muted); }
+#whoBody ul { margin: 0; padding-left: 18px; columns: 1; }
+#whoBody li { margin: 2px 0; }
+@media print { .modal { display: none !important; } }
 </style>
 </head>
 <body id="artifacts-component-root-html">
@@ -1486,6 +1507,16 @@ th { background: var(--head-bg); }
       <button class="btn primary" id="copyBtn">Copy leadership update</button>
     </div>
   </div>
+
+  <section class="panel editor-only" id="gitPanel" hidden="" aria-labelledby="gitTitle" style="margin-bottom:10px">
+    <header><div><h2 id="gitTitle">Publish to GitHub</h2><p class="sub">Two steps: click <b>Publish updated file</b> above, then paste the line below into Terminal and press Return.</p></div>
+      <button class="btn small" id="copyGit">Copy command</button></header>
+    <pre class="cmd" id="gitOne"></pre>
+    <details class="gitsteps"><summary>Or run it one step at a time</summary>
+      <pre class="cmd" id="gitSteps"></pre>
+      <button class="btn small" id="copyGitSteps">Copy these steps</button>
+    </details>
+  </section>
 
   <nav class="tabs" aria-label="Dashboard sections">
     <div class="tablist" role="tablist">
@@ -1641,11 +1672,17 @@ th { background: var(--head-bg); }
   </section>
   </div>
 </div>
+<div class="modal" id="whoModal" role="dialog" aria-modal="true" aria-labelledby="whoTitle" hidden="">
+  <div class="box">
+    <header><h2 id="whoTitle"></h2><button class="btn small" id="whoClose" data-close-who="">Close</button></header>
+    <div id="whoBody"></div>
+  </div>
+</div>
 <div class="toast" id="toast" role="status"></div>
 
 <script>
 const PRISTINE = "<!DOCTYPE html>\n" + document.documentElement.outerHTML; // clean copy used by "Publish updated file"
-const BAKED = {"app":"pbi-tracker-readiness","version":1,"publishVersion":4,"updatedBy":"Nancy","savedAt":"2026-10-21T22:50:53.542Z","items":{"rollout":{"status":"On Track","done":[false,false,false,false],"note":"","prev":""},"delivery-ready":{"status":"On Track","done":[false,false,false,false],"note":"","prev":""},"sales-attestation":{"status":"Planned","done":[false,false,false,false],"note":"","prev":""},"tracker-ready":{"status":"Planned","done":[false,false,false,false],"note":"","prev":""},"business-sales":{"status":"Planned","done":[false,false,false,false],"note":"","prev":""},"executive-ready":{"status":"Planned","done":[false,false,false,false],"note":"","prev":""},"golive-comms":{"status":"Planned","done":[false,false,false,false],"note":"","prev":""},"stabilization":{"status":"Planned","done":[false,false,false,false],"note":"","prev":""},"design":{"status":"Scheduled","done":[false,false],"note":"","prev":""},"collateral":{"status":"Scheduled","done":[false,false,false,false],"note":"","prev":""},"qc-release":{"status":"Scheduled","done":[false],"note":"","prev":""},"bdd":{"status":"Scheduled","done":[false],"note":"","prev":""},"optimization":{"status":"Scheduled","done":[false],"note":"","prev":""},"final":{"status":"Scheduled","done":[false,false,false],"note":"","prev":""},"launch":{"status":"Scheduled","done":[false],"note":"","prev":""},"wave1":{"status":"Scheduled","done":[false,false],"note":"","prev":""},"wave2":{"status":"Scheduled","done":[false,false],"note":"","prev":""},"wave3":{"status":"Scheduled","done":[false,false],"note":"","prev":""},"wave4":{"status":"Scheduled","done":[false],"note":"","prev":""},"wave5":{"status":"Scheduled","done":[false],"note":"","prev":""},"newhire":{"status":"Planned","done":[false,false,false],"note":"","prev":""},"oh-recurring":{"status":"Scheduled","done":[false,false,false],"note":"","prev":""}},"open":{"o1":false,"o2":false,"o3":false,"o4":false,"o5":false,"o6":false,"o7":false,"c1792154808515":false},"risks":[{"risk":"Training attendance or coverage gaps","level":"Low","status":"Open"},{"risk":"Sales attestation not completed by November 30","level":"Medium","status":"Open"},{"risk":"Late feedback before final incorporation on December 3","level":"Low","status":"Open"},{"risk":"Post-go-live support demand remains elevated","level":"Low","status":"Open"}],"comms":[{"name":"Rollout and communications approval","status":"Planned"},{"name":"Training program launch","status":"Planned"},{"name":"Business and sales readiness update","status":"Planned"},{"name":"Executive readiness summary","status":"Planned"},{"name":"Go-live communication","status":"Planned"},{"name":"Post-launch adoption update","status":"Planned"},{"name":"Adoption and stabilization summary","status":"Planned"}],"addedRisks":[],"removedRisks":["PDF automation testing issues"],"addedOpen":[{"id":"c1792154808515","q":"Confirm all Meetings have been scheduled","owner":"Nancy","due":"Oct 26","done":false}],"removedOpen":[],"meetingsDone":[],"meetingsHeld":[]}; // statuses published into this file by "Publish updated file"
+const BAKED = {"app":"pbi-tracker-readiness","version":1,"publishVersion":5,"updatedBy":"Nancy","savedAt":"2026-10-21T22:58:42.669Z","items":{"rollout":{"status":"On Track","done":[false,false,false,false],"note":"","prev":""},"delivery-ready":{"status":"On Track","done":[false,false,false,false],"note":"","prev":""},"sales-attestation":{"status":"Planned","done":[false,false,false,false],"note":"","prev":""},"tracker-ready":{"status":"Planned","done":[false,false,false,false],"note":"","prev":""},"business-sales":{"status":"Planned","done":[false,false,false,false],"note":"","prev":""},"executive-ready":{"status":"Planned","done":[false,false,false,false],"note":"","prev":""},"golive-comms":{"status":"Planned","done":[false,false,false,false],"note":"","prev":""},"stabilization":{"status":"Planned","done":[false,false,false,false],"note":"","prev":""},"design":{"status":"Scheduled","done":[false,false],"note":"","prev":""},"collateral":{"status":"Scheduled","done":[false,false,false,false],"note":"","prev":""},"qc-release":{"status":"Scheduled","done":[false],"note":"","prev":""},"bdd":{"status":"Scheduled","done":[false],"note":"","prev":""},"optimization":{"status":"Scheduled","done":[false],"note":"","prev":""},"final":{"status":"Scheduled","done":[false,false,false],"note":"","prev":""},"launch":{"status":"Scheduled","done":[false],"note":"","prev":""},"wave1":{"status":"Scheduled","done":[false,false],"note":"","prev":""},"wave2":{"status":"Scheduled","done":[false,false],"note":"","prev":""},"wave3":{"status":"Scheduled","done":[false,false],"note":"","prev":""},"wave4":{"status":"Scheduled","done":[false],"note":"","prev":""},"wave5":{"status":"Scheduled","done":[false],"note":"","prev":""},"newhire":{"status":"Planned","done":[false,false,false],"note":"","prev":""},"oh-recurring":{"status":"Scheduled","done":[false,false,false],"note":"","prev":""}},"open":{"o1":false,"o2":false,"o3":false,"o4":false,"o5":false,"o6":false,"o7":false,"c1792154808515":false},"risks":[{"risk":"Training attendance or coverage gaps","level":"Low","status":"Open"},{"risk":"Sales attestation not completed by November 30","level":"Medium","status":"Open"},{"risk":"Late feedback before final incorporation on December 3","level":"Low","status":"Open"},{"risk":"Post-go-live support demand remains elevated","level":"Low","status":"Open"}],"comms":[{"name":"Rollout and communications approval","status":"Planned"},{"name":"Training program launch","status":"Planned"},{"name":"Business and sales readiness update","status":"Planned"},{"name":"Executive readiness summary","status":"Planned"},{"name":"Go-live communication","status":"Planned"},{"name":"Post-launch adoption update","status":"Planned"},{"name":"Adoption and stabilization summary","status":"Planned"}],"addedRisks":[],"removedRisks":["PDF automation testing issues"],"addedOpen":[{"id":"c1792154808515","q":"Confirm all Meetings have been scheduled","owner":"Nancy","due":"Oct 26","done":false}],"removedOpen":[],"meetingsDone":[],"meetingsHeld":[]}; // statuses published into this file by "Publish updated file"
 /* =====================================================================
    DATA – taken from power_bi_tracker_rollout_dashboard_v6_calendar_reconciliation.html
    Edit this block to update the dashboard. Nothing is simulated.
@@ -1662,6 +1699,7 @@ const TODAY = TODAY_OVERRIDE || (() => { const d = new Date(); return d.getFullY
 const GO_LIVE = "2026-12-04";
 const GO_LIVE_TIME = "9:00 AM CT";
 const UPDATED_BY = "Nancy";      // shown as "Last updated by ..." in the header
+const GIT_FOLDER = "~/Documents/powerbi-tracker-readines"; // the folder where you cloned the GitHub repository
 const VERSION_BASE = 1;          // version of the file as first delivered; each "Publish updated file" adds 1
 const SUMMARY_TO = ["Danyelle Brausen", "Lydia Zheng", "Brandon Peters", "Brian Schmidt", "Justin Taylor", "Lisa Vicicondi", "Nick Rutledge", "Kim Pennington"]; // Leadership summary recipients
 
@@ -1770,11 +1808,16 @@ const EMAIL_TITLES = ["Executive Readiness Review"]; // items that are emails no
 const TRAINING_TITLE = n => "Power BI Tracker Training #" + n;
 const OFFICE_TITLE = n => "Power BI Tracker Office Hours #" + n;
 
+/* People invited to each meeting (names only). Filled in by the calendar sync, keyed by meeting title.
+   When you click "Publish updated file", these names are removed from the published copy unless PUBLISH_ATTENDEE_NAMES is true. */
+const PUBLISH_ATTENDEE_NAMES = false;
+const ATTENDEES = {}; // names removed when published
+
 /* CALENDAR SYNC (for the agent)
    Search Outlook for events from Oct 5, 2026 to Jan 15, 2027 whose titles exactly match the titles above and
    in the communications list. Replace "events" with one entry per matching event:
    { subject, start, end, organizer, link, invited }  (start and end are ISO strings with the local offset;
-   link is the Teams join URL or ""; invited is the number of attendees besides the organizer, or leave it out when there are none). Set syncedAt to today's date (YYYY-MM-DD). Change nothing else. */
+   link is the Teams join URL or ""; invited is the number of attendees besides the organizer, or leave it out when there are none). Also list each meeting's invited people in ATTENDEES (name, type Required or Optional, response). Set syncedAt to today's date (YYYY-MM-DD). Change nothing else. */
 const CALENDAR = {
   syncedAt: "2026-10-19",
   events: [
@@ -2022,7 +2065,7 @@ function renderSessionDetail(panel, title) {
     "<h4>On the calendar</h4><div>" + esc(when) + "</div>" +
     (e && e.organizer ? "<h4>Organizer</h4><div>" + esc(e.organizer) + "</div>" : "") +
     (e && "link" in e ? "<h4>Teams link</h4><div>" + (isUrl(e.link) ? '<a href="' + esc(e.link) + '" target="_blank" rel="noopener noreferrer">Join Teams meeting</a>' : e.link ? "Added" : "Not added yet") + "</div>" : "") +
-    (e && e.invited ? "<h4>Invited</h4><div>" + e.invited + " people</div>" : "") +
+    (e && e.invited ? "<h4>Invited</h4><div>" + whoBtn(e).replace(esc(e.invited + " invited"), esc(e.invited + " people. See who")) + "</div>" : "") +
     "<h4>Part of</h4><div>" + esc(sr.title) + ", session " + idx + " of " + sr.rows.length + "</div>" +
     (state.edit ? '<p><button class="btn small" data-mc="' + encodeURIComponent(r.title) + '">' + (done ? "Undo complete" : "Mark complete") + "</button></p>" : "") +
     '<p><button class="btn small" data-id="' + sr.id + '">See all ' + esc(sr.title.toLowerCase()) + "</button></p></div>";
@@ -2201,11 +2244,12 @@ function toggleDone(title) {
   markDirty(); renderTables(); refresh(true);
 }
 const isUrl = u => /^https:\/\//i.test(u || "");
+const whoBtn = e => e.invited ? '<button class="linkbtn" data-who="' + encodeURIComponent(e.subject) + '">' + esc(e.invited + " invited") + "</button>" : "";
 const teamsHtml = e => "link" in e ? (isUrl(e.link) ? '<a href="' + esc(e.link) + '" target="_blank" rel="noopener noreferrer">Join Teams meeting</a>' : e.link ? "Teams link added" : "No Teams link") : "";
 function calCell(r) {
   if (!r.ev) return '<span class="meta">&ndash;</span>';
   const e = r.ev, t = [fmtClock(e.start), fmtMins(e.start, e.end)].filter(Boolean).join(", ");
-  const bits = [e.organizer ? esc("Organizer: " + e.organizer) : "", teamsHtml(e), e.invited ? esc(e.invited + " invited") : ""].filter(Boolean).join("; ");
+  const bits = [e.organizer ? esc("Organizer: " + e.organizer) : "", teamsHtml(e), whoBtn(e)].filter(Boolean).join("; ");
   return esc(fmtDay(e.day) + (t ? ", " + t : "")) + (bits ? '<div class="meta">' + bits + "</div>" : "");
 }
 function partLine(p) {
@@ -2462,7 +2506,8 @@ $("#publishBtn").onclick = () => {
   state.version += 1;
   const snap = snapshot();
   const baked = "const BAKED" + " = " + JSON.stringify(snap).replace(/<\//g, "<\\/") + ";";
-  const html = PRISTINE.replace(new RegExp("const " + "BAKED = [^\\n]*;"), () => baked);
+  let html = PRISTINE.replace(new RegExp("const " + "BAKED = [^\\n]*;"), () => baked);
+  if (!PUBLISH_ATTENDEE_NAMES) html = html.replace(new RegExp("const " + "ATTENDEES = \\{[\\s\\S]*?\\n\\};"), () => "const ATTENDEES = {}; // names removed when published");
   const blob = new Blob([html], { type: "text/html" });
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
   a.download = "index.html"; // the name GitHub Pages opens by default
@@ -2471,6 +2516,7 @@ $("#publishBtn").onclick = () => {
   storeSave(snap);
   state.stampAt = snap.savedAt; state.unpublished = false;
   state.dirty = false; $("#dirty").hidden = true;
+  state.publishedNow = true; renderGit();
   renderStamp(); renderSummary();
   toast("Version " + state.version + " downloaded as index.html. Upload it to GitHub over the old file.");
 };
@@ -2515,6 +2561,7 @@ document.addEventListener("click", ev => {
 /* ---------- show or hide the editing tools (Cmd+Shift+A on Mac, Ctrl+Shift+A on Windows) ---------- */
 function setEditorUI(on) {
   state.unlocked = !!on;
+  if (on) renderGit();
   document.querySelectorAll(".editor-only").forEach(el => { el.hidden = !on; });
   $("#dirty").hidden = !(on && state.dirty);
   if (!on && state.edit) {
@@ -2554,6 +2601,42 @@ $("#themeBtn").onclick = () => {
 let startTheme = "auto";
 try { const t = localStorage.getItem(THEME_KEY); if (THEMES.includes(t)) startTheme = t; } catch (e) {}
 applyTheme(startTheme);
+
+/* ---------- who was invited ---------- */
+function openWho(subject) {
+  const list = ATTENDEES[subject] || [], ev = CALENDAR.events.find(x => x.subject === subject);
+  const n = list.length || (ev && ev.invited) || 0;
+  $("#whoTitle").textContent = "Invited to " + shortTitle(subject) + " (" + n + ")";
+  if (!list.length) {
+    $("#whoBody").innerHTML = '<p class="meta">The names are not stored in this copy of the page. Ask for a calendar sync to load them.</p>';
+  } else {
+    const req = list.filter(a => a.type === "Required"), opt = list.filter(a => a.type !== "Required");
+    const count = r => list.filter(a => a.response === r).length;
+    const items = arr => "<ul>" + arr.map(a => "<li>" + esc(a.name) + ' <span class="meta">(' + esc(a.response) + ")</span></li>").join("") + "</ul>";
+    $("#whoBody").innerHTML = '<p class="meta">' + req.length + " required, " + opt.length + " optional. " + count("Accepted") + " accepted, " + count("Declined") + " declined, " +
+      count("Tentative") + " tentative, " + count("No response yet") + " no response yet.</p>" +
+      (req.length ? "<h4>Required</h4>" + items(req) : "") + (opt.length ? "<h4>Optional</h4>" + items(opt) : "");
+  }
+  $("#whoModal").hidden = false; $("#whoClose").focus();
+}
+function closeWho() { $("#whoModal").hidden = true; }
+document.addEventListener("click", ev => {
+  const w = ev.target.closest && ev.target.closest("[data-who]");
+  if (w) { openWho(decodeURIComponent(w.dataset.who)); return; }
+  if ((ev.target.closest && ev.target.closest("[data-close-who]")) || (ev.target && ev.target.id === "whoModal")) closeWho();
+});
+document.addEventListener("keydown", ev => { if (ev.key === "Escape" && !$("#whoModal").hidden) closeWho(); });
+
+/* ---------- GitHub publish commands ---------- */
+function renderGit() {
+  const msg = "Dashboard version " + (state.publishedNow ? state.version : state.version + 1);
+  const one = "cd " + GIT_FOLDER + ' && mv "$(ls -t ~/Downloads/index*.html | head -1)" index.html && git add index.html && git commit -m "' + msg + '" && git push';
+  const steps = ["cd " + GIT_FOLDER, "mv ~/Downloads/index.html ./index.html", "git add index.html", 'git commit -m "' + msg + '"', "git push"].join("\n");
+  $("#gitOne").textContent = one; $("#gitSteps").textContent = steps;
+  state.gitOne = one; state.gitSteps = steps;
+}
+$("#copyGit").onclick = () => copyText(state.gitOne, "Command copied. Paste it into Terminal and press Return.");
+$("#copyGitSteps").onclick = () => copyText(state.gitSteps, "Steps copied. Paste them into Terminal.");
 
 /* ---------- version stamp ---------- */
 function stampText() {
@@ -2660,7 +2743,7 @@ if (BAKED) { try { applySnapshot(BAKED); bakedAt = BAKED.savedAt || null; state.
   }
 }
 $("#asof").textContent = fmt(today);
-renderStamp();
+renderStamp(); renderGit();
 state.sel = (gates().filter(i => i.e >= today).sort((a, b) => a.s - b.s)[0] || gates()[0]).id;
 renderTables(); renderCoverage(); refresh(true); renderWalk();
 { const tick = setInterval(() => { if (typeof document === "undefined" || !document.hidden) { refresh(false); renderTables(); } }, 60000); if (tick && tick.unref) tick.unref(); }
