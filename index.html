@@ -1,1145 +1,5 @@
 <!DOCTYPE html>
 <html lang="en"><head>
-    <script>
-      (function() {
-        // Capture host references before any artifact code runs: Window.parent
-        // is [Replaceable] (a top-level `var parent` in artifact code would
-        // replace the accessor with a data property), and a top-level
-        // `const crypto` would shadow the global — either would otherwise
-        // silently break the bridge for artifacts that worked before.
-        const realParent = window.parent;
-        const cryptoObj = window.crypto;
-        const RealURL = URL;
-        const realDecodeURIComponent = decodeURIComponent;
-        const RealTextEncoder = TextEncoder;
-        const realAtob = atob;
-        // html-to-image is only used by takeScreenshot: fetched on first use, not as a
-        // parser-blocking tag. Native fetch, captured before the proxy override below.
-        const realFetch = typeof window.fetch === 'function' ? window.fetch.bind(window) : null;
-        const HTML_TO_IMAGE_SRC = "https://cdnjs.cloudflare.com/ajax/libs/html-to-image/1.11.13/html-to-image.min.js";
-        const HTML_TO_IMAGE_INTEGRITY = "sha512-iZ2ORl595Wx6miw+GuadDet4WQbdSWS3JLMoNfY8cRGoEFy6oT3G9IbcrBeL6AfkgpA51ETt/faX6yLV+/gFJg==";
-        let htmlToImageLoad = null;
-        const loadHtmlToImage = () => {
-          if (!htmlToImageLoad) {
-            htmlToImageLoad = (realFetch
-              ? realFetch(HTML_TO_IMAGE_SRC, { integrity: HTML_TO_IMAGE_INTEGRITY, credentials: 'omit', referrerPolicy: 'no-referrer' })
-              : Promise.reject(new Error('fetch unavailable'))
-            )
-              .then((res) => {
-                if (!res.ok) throw new Error('html-to-image failed to load (' + res.status + ')');
-                return res.text();
-              })
-              .then((source) => {
-                // UMD bundle: hide the artifact's AMD/CommonJS globals so it takes the
-                // window-global branch; inline script text runs synchronously on insert.
-                const hidden = ['define', 'module', 'exports'].map((k) => {
-                  const entry = { k, own: Object.prototype.hasOwnProperty.call(window, k), v: window[k] };
-                  try { window[k] = undefined; } catch (e) {}
-                  return entry;
-                });
-                try {
-                  const el = document.createElement('script');
-                  el.text = source;
-                  (document.head || document.documentElement).appendChild(el);
-                } finally {
-                  hidden.forEach(({ k, own, v }) => {
-                    try { if (own) { window[k] = v; } else { delete window[k]; } } catch (e) {}
-                  });
-                }
-                if (!window.htmlToImage) throw new Error('html-to-image unavailable after load');
-                return window.htmlToImage;
-              });
-            // A failed load may be transient; let the next screenshot retry.
-            htmlToImageLoad.catch(() => { htmlToImageLoad = null; });
-          }
-          return htmlToImageLoad;
-        };
-        // crypto.randomUUID exists only in Secure Contexts; fall back to a
-        // unique non-crypto id elsewhere (http://LAN-IP dev flows) —
-        // uniqueness is what the bridge needs, unpredictability is
-        // defense-in-depth on top of the source guards.
-        const newRequestId =
-          cryptoObj && typeof cryptoObj.randomUUID === "function"
-            ? function () { return cryptoObj.randomUUID(); }
-            : function () { return Date.now() + "-" + Math.random(); };
-        const originalConsole = window.console;
-        window.console = {
-          log: (...args) => {
-            originalConsole.log(...args);
-            realParent.postMessage({ type: 'console', message: args.join(' ') }, '*');
-          },
-          error: (...args) => {
-            originalConsole.error(...args);
-            realParent.postMessage({ type: 'console', message: 'Error: ' + args.join(' ') }, '*');
-          },
-          warn: (...args) => {
-            originalConsole.warn(...args);
-            realParent.postMessage({ type: 'console', message: 'Warning: ' + args.join(' ') }, '*');
-          }
-        };
-
-        // Bridge request ids are crypto-random (not sequential) so they
-        // cannot be predicted by other frames in the tab.
-        let callbacksMap = new Map();
-        let streamControllers = new Map();
-        
-        window.claude = {
-          complete: (prompt) => {
-            return new Promise((resolve, reject) => {
-              const id = newRequestId();
-              callbacksMap.set(id, { resolve, reject });
-              realParent.postMessage({ type: 'claudeComplete', id, prompt }, '*');
-            });
-          }
-        };
-
-        window.storage = {
-          get: (key, shared = false) => {
-            return new Promise((resolve, reject) => {
-              const id = newRequestId();
-              callbacksMap.set(id, { resolve, reject });
-              realParent.postMessage({ type: 'storageGet', id, key, shared }, '*');
-            });
-          },
-          set: (key, value, shared = false) => {
-            return new Promise((resolve, reject) => {
-              const id = newRequestId();
-              callbacksMap.set(id, { resolve, reject });
-              realParent.postMessage({ type: 'storageSet', id, key, value, shared }, '*');
-            });
-          },
-          delete: (key, shared = false) => {
-            return new Promise((resolve, reject) => {
-              const id = newRequestId();
-              callbacksMap.set(id, { resolve, reject });
-              realParent.postMessage({ type: 'storageDelete', id, key, shared }, '*');
-            });
-          },
-          list: (prefix, shared = false) => {
-            return new Promise((resolve, reject) => {
-              const id = newRequestId();
-              callbacksMap.set(id, { resolve, reject });
-              realParent.postMessage({ type: 'storageList', id, prefix, shared }, '*');
-            });
-          }
-        };
-
-        let pendingBlobs = new Map();
-        URL.createObjectURL = (blob) => {
-          // Store the blob and create an ID and URL for it
-          const blobId = `blob-${Date.now()}-${Math.random()}`;
-          pendingBlobs.set(blobId, blob);
-          return `blob-request://${blobId}`;
-        };
-
-        URL.revokeObjectURL = (url) => {
-          // Remove the blob from our store
-          const blobId = url.replace("blob-request://", "");
-          pendingBlobs.delete(blobId);
-        };
-
-        const getBlobFromURL = (url) => {
-          const blobId = url.replace("blob-request://", "");
-          return pendingBlobs.get(blobId);
-        };
-
-        // Override global fetch with streaming support
-        window.fetch = (url, init = {}) => {
-          return new Promise((resolve, reject) => {
-            const id = newRequestId();
-            const channelId = `fetch-${id}-${Date.now()}`;
-            
-            callbacksMap.set(id, { 
-              resolve: (response) => {
-                // Null-body statuses: Response(stream, {status: 204}) throws
-                // per the Fetch spec, which would escape this resolver and
-                // hang the artifact's await forever.
-                if (response.status === 204 || response.status === 205 || response.status === 304) {
-                  try {
-                    resolve(new Response(null, {
-                      status: response.status,
-                      statusText: response.statusText,
-                      headers: response.headers
-                    }));
-                  } catch (err) {
-                    // Invalid statusText/header bytes can throw here too.
-                    reject(new TypeError(
-                      'Bridge fetch: unconstructable response (status ' + response.status + ')'
-                    ));
-                  }
-                  return;
-                }
-                // Create a ReadableStream for the response body
-                const stream = new ReadableStream({
-                  start(controller) {
-                    streamControllers.set(channelId, controller);
-                  },
-                  cancel() {
-                    streamControllers.delete(channelId);
-                  }
-                });
-                
-                // Create and return the Response with the stream. Response()
-                // requires status in [200, 599]; an opaque/no-cors fetch
-                // forwards status 0, which would throw here and escape the
-                // resolver, hanging the artifact's await. Surface it as a
-                // network-error-shaped rejection instead.
-                try {
-                  resolve(new Response(stream, {
-                    status: response.status,
-                    statusText: response.statusText,
-                    headers: response.headers
-                  }));
-                } catch (err) {
-                  streamControllers.delete(channelId);
-                  reject(new TypeError(
-                    'Bridge fetch: unconstructable response (status ' + response.status + ')'
-                  ));
-                }
-              },
-              reject,
-              channelId
-            });
-            
-            realParent.postMessage({
-              type: 'proxyFetch',
-              id,
-              url,
-              init,
-              channelId
-            }, '*');
-          });
-        };
-
-        window.addEventListener('message', async (event) => {
-          // Only the embedding parent may drive the bridge — sibling and
-          // nested frames can also postMessage into this window.
-          if (event.source !== realParent) return;
-          if (event.data.type === 'takeScreenshot') {
-            // Echo the request's nonce so the requester can correlate the
-            // reply to ITS request — a reply without the expected nonce
-            // (e.g. from a stale pre-remount artifact) is ignored upstream.
-            const screenshotNonce = event.data.nonce;
-            const rootElement = document.getElementById('artifacts-component-root-html');
-            if (!rootElement) {
-              realParent.postMessage({
-                type: 'screenshotError',
-                nonce: screenshotNonce,
-                error: new Error('Root element not found'),
-              }, '*');
-              return;
-            }
-            // Catch CDN load failures and toPng errors so the parent always
-            // gets a response instead of hanging forever.
-            try {
-              const htmlToImage = await loadHtmlToImage();
-              const screenshot = await htmlToImage.toPng(rootElement, {
-                imagePlaceholder:
-                  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAAXNSR0IArs4c6QAAAA1JREFUGFdjePDgwX8ACOQDoNsk0PMAAAAASUVORK5CYII=",
-              });
-              realParent.postMessage({
-                type: 'screenshotData',
-                nonce: screenshotNonce,
-                data: screenshot,
-              }, '*');
-            } catch (err) {
-              realParent.postMessage({
-                type: 'screenshotError',
-                nonce: screenshotNonce,
-                error: err instanceof Error ? err : new Error(String(err)),
-              }, '*');
-            }
-          } else if (event.data.type === 'claudeComplete') {
-            const callback = callbacksMap.get(event.data.id);
-            if (!callback) return;
-            if (event.data.error) {
-              callback.reject(new Error(event.data.error));
-            } else {
-              callback.resolve(event.data.completion);
-            }
-            callbacksMap.delete(event.data.id);
-          } else if (event.data.type === 'proxyFetchResponse') {
-            const callback = callbacksMap.get(event.data.id);
-            if (!callback) return;
-            if (event.data.error) {
-              callback.reject(new Error(event.data.error));
-              callbacksMap.delete(event.data.id);
-            } else {
-              // Initial response with headers, status, etc.
-              callback.resolve({
-                status: event.data.status,
-                statusText: event.data.statusText,
-                headers: event.data.headers
-              });
-              // Don't delete the callback yet if streaming
-              if (!event.data.body) {
-                callbacksMap.delete(event.data.id);
-              }
-            }
-          } else if (event.data.type === 'proxyFetchStream') {
-            // Handle streaming data chunks
-            const controller = streamControllers.get(event.data.channelId);
-            if (controller) {
-              if (event.data.error) {
-                controller.error(new Error(event.data.error));
-                streamControllers.delete(event.data.channelId);
-              } else if (event.data.done) {
-                controller.close();
-                streamControllers.delete(event.data.channelId);
-                // Clean up the callback
-                const callback = Array.from(callbacksMap.entries()).find(
-                  ([_, value]) => value.channelId === event.data.channelId
-                );
-                if (callback) {
-                  callbacksMap.delete(callback[0]);
-                }
-              } else if (event.data.chunk) {
-                controller.enqueue(new Uint8Array(event.data.chunk));
-              }
-            }
-          } else if (event.data.type === 'storageGet') {
-            const callback = callbacksMap.get(event.data.id);
-            if (!callback) return;
-            if (event.data.error) {
-              callback.reject(new Error(event.data.error));
-            } else {
-              callback.resolve(event.data.result);
-            }
-            callbacksMap.delete(event.data.id);
-          } else if (event.data.type === 'storageSet') {
-            const callback = callbacksMap.get(event.data.id);
-            if (!callback) return;
-            if (event.data.error) {
-              callback.reject(new Error(event.data.error));
-            } else {
-              callback.resolve(event.data.result);
-            }
-            callbacksMap.delete(event.data.id);
-          } else if (event.data.type === 'storageDelete') {
-            const callback = callbacksMap.get(event.data.id);
-            if (!callback) return;
-            if (event.data.error) {
-              callback.reject(new Error(event.data.error));
-            } else {
-              callback.resolve(event.data.result);
-            }
-            callbacksMap.delete(event.data.id);
-          } else if (event.data.type === 'storageList') {
-            const callback = callbacksMap.get(event.data.id);
-            if (!callback) return;
-            if (event.data.error) {
-              callback.reject(new Error(event.data.error));
-            } else {
-              callback.resolve(event.data.result);
-            }
-            callbacksMap.delete(event.data.id);
-          }
-        });
-
-        // An SVG <a> exposes href as an SVGAnimatedString; its baseVal is the attribute
-        // as written, so resolve it against the base URL as the browser does for an HTML <a>.
-        const resolvedHref = (linkEl) => {
-          if (typeof linkEl.href === "string") return linkEl.href;
-          const written = linkEl.href?.baseVal;
-          // A same-document SVG link, such as one that begins an animation, stays with the browser.
-          if (!written || written.trim().startsWith("#")) return "";
-          try {
-            return new RealURL(written, linkEl.baseURI).href;
-          } catch (error) {
-            return written;
-          }
-        };
-
-        // This frame's URL is about:srcdoc, so the browser resolves "#id" against the renderer
-        // page and would load that page in the frame instead of scrolling.
-        const sameDocumentFragment = (linkEl) => {
-          const written = linkEl.getAttribute("href")?.trim();
-          if (!written?.startsWith("#") || document.querySelector("base[href]")) return null;
-          return written.slice(1);
-        };
-
-        const scrollToFragment = (fragment) => {
-          let decoded = fragment;
-          try {
-            decoded = realDecodeURIComponent(fragment);
-          } catch (error) {}
-          let target = document.getElementById(fragment) ?? document.getElementById(decoded);
-          for (const named of target ? [] : document.getElementsByName(decoded)) {
-            if (named.localName === "a") {
-              target = named;
-              break;
-            }
-          }
-          if (target) {
-            target.scrollIntoView();
-          } else if (decoded.toLowerCase() === "top") {
-            window.scrollTo(0, 0);
-          } else {
-            return false;
-          }
-          return true;
-        };
-
-        // Same decoder as dataUrlFile in app/page.tsx; change both together.
-        const hexPair = /^[0-9a-f]{2}$/i;
-        const dataUrlFile = (href) => {
-          const hash = href.indexOf("#");
-          const url = hash === -1 ? href : href.slice(0, hash);
-          const comma = url.indexOf(",");
-          if (comma === -1) return null;
-          const header = url.slice(0, comma);
-          const payload = url.slice(comma + 1);
-          const mimeMatch = header.match(/data:([^;]+)/);
-          const mimeType = mimeMatch ? mimeMatch[1] : "application/octet-stream";
-          const declaredBase64 = header
-            .split(";")
-            .slice(1)
-            .some((param) => param.trim().toLowerCase() === "base64");
-          const type = mimeMatch ? mimeMatch[1].trim().toLowerCase() : "";
-          const binaryType = type !== "" && !type.startsWith("text/");
-          if (declaredBase64 || (binaryType && !payload.includes("%"))) {
-            let binary = null;
-            try {
-              binary = realAtob(
-                payload.replace(/%([0-9a-f]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16))),
-              );
-            } catch (error) {
-              if (declaredBase64) return null;
-            }
-            if (binary !== null) {
-              const bytes = new Uint8Array(binary.length);
-              for (let i = 0; i < binary.length; i++) {
-                bytes[i] = binary.charCodeAt(i);
-              }
-              return { mimeType, data: bytes.buffer };
-            }
-          }
-          const input = new RealTextEncoder().encode(payload);
-          const bytes = new Uint8Array(input.length);
-          let length = 0;
-          for (let i = 0; i < input.length; i++) {
-            if (input[i] === 0x25 && i + 2 < input.length) {
-              const pair = String.fromCharCode(input[i + 1], input[i + 2]);
-              if (hexPair.test(pair)) {
-                bytes[length++] = parseInt(pair, 16);
-                i += 2;
-                continue;
-              }
-            }
-            bytes[length++] = input[i];
-          }
-          return { mimeType, data: bytes.slice(0, length).buffer };
-        };
-
-        window.addEventListener('click', (event) => {
-          // Not instanceof Element: an artifact's own top-level class Element shadows the global.
-          if (typeof event.target?.closest !== "function") return;
-    
-          const linkEl = event.target.closest("a");
-          const href = linkEl && resolvedHref(linkEl);
-          if (!href) return;
-
-          const fragment = sameDocumentFragment(linkEl);
-          if (fragment !== null) {
-            const handledByArtifact = event.defaultPrevented;
-            event.preventDefault();
-            if (handledByArtifact || fragment === "" || scrollToFragment(fragment)) return;
-            // A fragment that names nothing in the artifact may name something in the host,
-            // such as a project thread. The artifact's own listeners still see the click.
-            realParent.postMessage({ type: 'openExternal', href }, '*');
-            return;
-          }
-          const filename = linkEl.getAttribute("download") ?? "";
-    
-          event.preventDefault();
-          event.stopImmediatePropagation();
-    
-          if (href.startsWith("blob-request:")) {
-            const blob = getBlobFromURL(href);
-            if (!blob) return;
-            void blob.arrayBuffer().then((data) => {
-              realParent.postMessage({
-                type: "downloadFile",
-                filename,
-                data,
-                mimeType: blob.type || "application/octet-stream",
-              });
-            });
-          } else if (href.startsWith("data:")) {
-            const file = dataUrlFile(href);
-            if (!file) return;
-            realParent.postMessage({
-              type: "downloadFile",
-              filename,
-              data: file.data,
-              mimeType: file.mimeType,
-            });
-          } else {
-            let linkUrl;
-            try {
-              linkUrl = new URL(href);
-            } catch (error) {
-              return;
-            }
-    
-            if (linkUrl.hostname === window.location.hostname) return;
-      
-            realParent.postMessage({
-              type: 'openExternal',
-              href,
-            }, '*');
-          }
-      });
-
-        const originalOpen = window.open;
-        window.open = function (url) {
-          realParent.postMessage({
-            type: "openExternal",
-            href: url,
-          }, "*");
-        };
-
-        window.addEventListener('error', (event) => {
-          realParent.postMessage({ type: 'console', message: 'Uncaught Error: ' + event.message }, '*');
-        });
-      })();
-    </script>
-  <style id="claude-scrollbar">@layer claude-scrollbar{*{scrollbar-width:thin}html{scrollbar-color:rgb(128 128 128 / 50%) transparent}}</style><script>
-(function () {
-  "use strict";
-  if (window.__coworkHtmlReviewGuest) return;
-  window.__coworkHtmlReviewGuest = true;
-
-  var READY_TYPE = "__cowork_html_review_ready__";
-  var SEL_CLASS = "__cwhr-sel";
-  var CONTEXT_LEN = 32;
-  var EXACT_CAP = 1000;
-  var port = null;
-  var mode = false;
-  var pins = [];
-  var quotes = [];
-  // Resolved Range per quote id; invalidated on DOM mutation and on a
-  // fresh quotes set. Scroll/resize re-reports just re-read
-  // getClientRects() from the cached Range. Null prototype - ids are
-  // collaborator-writable and must not collide with Object.prototype.
-  var quoteRanges = Object.create(null);
-  var hoverEl = null;
-  var selected = null;
-  var hasTextSel = false;
-  var rafPending = false;
-  // Capture before page body scripts can shadow them; start() defers
-  // to DOMContentLoaded which page code can race.
-  var _MessageChannel = window.MessageChannel;
-  var _topPost = window.top.postMessage.bind(window.top);
-
-  function visibleText(el) {
-    // innerText drops display:none/visibility:hidden subtrees; keep an
-    // empty innerText (icon-only el) rather than falling through to
-    // textContent which would re-include hidden text.
-    var t = typeof el.innerText === "string" ? el.innerText : (el.textContent || "");
-    return t.replace(/\s+/g, " ").trim();
-  }
-
-  // Comment-mode cursor: see HTML_PREVIEW_COMMENT_CURSOR above.
-  var BUBBLE_CURSOR = "url(\"data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'24'%20height%3D'24'%20viewBox%3D'0%200%2024%2024'%3E%3Cpath%20d%3D'M12%20.5h0A11.5%2011.5%200%200%201%2023.5%2012v0A11.5%2011.5%200%200%201%2012%2023.5H2.5a2%202%200%200%201-2-2V12A11.5%2011.5%200%200%201%2012%20.5Z'%20fill%3D'%23fff'%20stroke%3D'rgba(0%2C0%2C0%2C0.22)'%20stroke-width%3D'1'%2F%3E%3C%2Fsvg%3E\") 1 23, url(\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAACjklEQVR4AbRWS2gaURR9TGpiFTUEWpKQkA+EruqizWcRSBRT/G8KKpXiyo0ra1fVNiDFLmypFUo3iht/iO4Uay1FGwtFECl1p6KWLly4CGqrSMTY+wRFQ7WhGYd7Zu697845b+7M8B6BJh+UxcXFG3a7XeTxeHQAC+C12+1+ZLPZhHgMbp8FjLWxAkaj8U48Hg8lEomfIpEoLBaLLTKZTAd4LJFI3kD8HsZ+xGKxoMFgYI9T+JvAtUAg8FylUn3hcDj8ra0t6vLyMmKxWIhCofSAfZyDMRqXy+Wr1eqvPp/vKYjMAEZsRMDpdN6MRCKf+Xz+8cbGBm2kckIAtXShUGgKh8Mnfr9/Ybh0IKDT6a4vLS19EggE+wwGY7jmUj6TyUTQyv35+fmP0MbBexkISKVS+97e3u1LsU0oAo67Go3G1i/pCZjN5t3Nzc0H/zPzPlH/ip8EWvbQYrHs4hwWmN3e3n62traGfZy7MtbX12fYbPYTIKIQOzs7C6urq/cgINVWVlaO4EtjEXq9nken06mksgMZtJthtVp5xNzcHBsEIEWu0Wg0RKVS2USz2WTigFx6hPCkMTfRarXgB6WQzd/j63Q6bdK+nB7j0KnRaCCCIMpTE4D2oEql8m1qAvV6/VSr1U5PIJvN+qFjv6fyBIVC4ZfD4XgJAmekC9RqNZROp1+FQqESCCDSBWCVO1EoFC8wOQZpAnjm0Wj0O/xX94H4HNAzotvtNnreFU6lUgllMplAMpnclcvlp8NURC6Xi8BLGc5N9NvtNqpWq6hcLqN8Pn8OLUkAMe/g4EAOG4WzizcTJpPpA6zFIpfL9Ra2I45/IRgM2lKp1LtisXjs9XpvHR4eHimVythF4n78BwAA//8r8OPFAAAABklEQVQDAPCY8Oae0TJxAAAAAElFTkSuQmCC\") 1 23, default";
-
-  function injectStyle() {
-    var style = document.createElement("style");
-    // Hover box is painted by the host (from streamed rects); the guest
-    // marks the selected element and, in comment mode, swaps the native
-    // cursor for the comment bubble (forced, so page cursor styles don't
-    // fight the picker). While a composer or thread card is open the arrow
-    // returns, so the bubble cursor and the pin just placed never show at
-    // once. Keyed on <html> data attributes, which page scripts that
-    // rewrite body.className leave alone; ":not(#_)" lifts the rules to
-    // id-level specificity so a page's own !important cursor rules lose.
-    var ANY = ":not(#__cwhr_)";
-    var MODE = "html[data-cwhr-mode]";
-    var COMPOSING = MODE + "[data-cwhr-composing]";
-    style.textContent =
-      "." + SEL_CLASS + "{outline:1px solid hsl(40 70% 40%) !important;outline-offset:0;}" +
-      MODE + ANY + "," + MODE + " " + ANY + "{cursor:" + BUBBLE_CURSOR + " !important;}" +
-      COMPOSING + ANY + "," + COMPOSING + " " + ANY + "{cursor:default !important;}";
-    (document.head || document.documentElement).appendChild(style);
-  }
-
-  function isUnique(sel) {
-    try {
-      return document.querySelectorAll(sel).length === 1;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  // Mirrors the host's stripInvisibles ranges. The host strips these
-  // from stored selectors, so a selector built on a value containing
-  // them would validate here but never match again - skip those rungs
-  // and fall through to the structural ladder instead.
-  function hasInvisibles(s) {
-    for (var i = 0; i < s.length; i++) {
-      var c = s.codePointAt(i);
-      if (c > 0xffff) i++;
-      if (
-        c <= 0x1f ||
-        c === 0x061c ||
-        c === 0x070f ||
-        c === 0xad ||
-        (c >= 0x7f && c <= 0x9f) ||
-        c === 0x115f ||
-        c === 0x1160 ||
-        c === 0x180e ||
-        (c >= 0x200b && c <= 0x200f) ||
-        (c >= 0x202a && c <= 0x202e) ||
-        (c >= 0x2060 && c <= 0x2064) ||
-        (c >= 0x2066 && c <= 0x2069) ||
-        c === 0x3164 ||
-        c === 0xfeff ||
-        (c >= 0xfff9 && c <= 0xfffb) ||
-        c === 0xffa0 ||
-        (c >= 0xe0000 && c <= 0xe007f)
-      ) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  function escapeAttr(v) {
-    return String(v).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  }
-
-  // Selector ladder: unique #id -> unique [data-*] -> structural
-  // tag:nth-of-type path rooted at the nearest unique-id ancestor.
-  function selectorFor(el) {
-    if (el.id && !hasInvisibles(el.id) && isUnique("#" + CSS.escape(el.id))) {
-      return "#" + CSS.escape(el.id);
-    }
-    for (var i = 0; i < el.attributes.length; i++) {
-      var attr = el.attributes[i];
-      if (
-        attr.name.indexOf("data-") === 0 &&
-        attr.value &&
-        !hasInvisibles(attr.value)
-      ) {
-        var dataSel = "[" + attr.name + '="' + escapeAttr(attr.value) + '"]';
-        if (isUnique(dataSel)) return dataSel;
-      }
-    }
-    var parts = [];
-    var cur = el;
-    while (cur && cur !== document.body && cur.nodeType === 1 && parts.length < 10) {
-      var sel = cur.tagName.toLowerCase();
-      var parent = cur.parentElement;
-      if (parent) {
-        var sameTag = [];
-        for (var c = 0; c < parent.children.length; c++) {
-          if (parent.children[c].tagName === cur.tagName) sameTag.push(parent.children[c]);
-        }
-        if (sameTag.length > 1) {
-          sel += ":nth-of-type(" + (sameTag.indexOf(cur) + 1) + ")";
-        }
-      }
-      parts.unshift(sel);
-      if (
-        parent &&
-        parent.id &&
-        !hasInvisibles(parent.id) &&
-        isUnique("#" + CSS.escape(parent.id))
-      ) {
-        parts.unshift("#" + CSS.escape(parent.id));
-        return parts.join(" > ");
-      }
-      cur = parent;
-    }
-    if (cur === document.body) {
-      parts.unshift("body");
-      return parts.join(" > ");
-    }
-    // Depth cap hit without a root - an unrooted chain would match the
-    // first structural pattern anywhere in the document. Mark the pin
-    // detached instead of attaching it to the wrong element.
-    return ":not(*)";
-  }
-
-  function descriptorFor(el) {
-    var tag = "<" + el.tagName.toLowerCase() + ">";
-    var idPart = el.id ? " #" + el.id : "";
-    var text = visibleText(el).slice(0, 60);
-    var textPart = text ? ' "' + text + '"' : "";
-    // Nearest id'd ancestor, skipping the UCR-injected
-    // #artifacts-component-root-* wrapper which is implementation noise.
-    var section = el.parentElement;
-    while (
-      section &&
-      (!section.id || section.id.indexOf("artifacts-component-root") === 0)
-    ) {
-      section = section.parentElement;
-    }
-    var sectionPart = section && section.id ? " in #" + section.id : "";
-    return (tag + idPart + textPart + sectionPart).slice(0, 400);
-  }
-
-  // textContent offset of (node, offset) within body - the coordinate
-  // system text-quote anchors are stored in. -1 when the boundary
-  // isn't under body (shadow root, detached).
-  function textOffset(node, offset) {
-    var body = document.body;
-    if (!body) return -1;
-    try {
-      var pre = document.createRange();
-      pre.selectNodeContents(body);
-      pre.setEnd(node, offset);
-      return pre.toString().length;
-    } catch (e) {
-      return -1;
-    }
-  }
-
-  // Inverse: build a Range covering [start, end) in body.textContent.
-  function rangeForOffsets(start, end) {
-    var body = document.body;
-    if (!body) return null;
-    var walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
-    var acc = 0;
-    var range = document.createRange();
-    var haveStart = false;
-    var t;
-    while ((t = walker.nextNode())) {
-      var next = acc + t.length;
-      if (!haveStart && start < next) {
-        range.setStart(t, start - acc);
-        haveStart = true;
-      }
-      if (haveStart && end <= next) {
-        range.setEnd(t, end - acc);
-        return range;
-      }
-      acc = next;
-    }
-    return null;
-  }
-
-  // Context-scored search (W3C text-quote resolution): slice-check the
-  // hint, else pick the occurrence whose surrounding chars best match
-  // prefix/suffix. MIRRORS locateTextQuote() above line-for-line - the
-  // tested export is the contract; this copy is what the sandbox runs.
-  function locateQuote(text, q) {
-    var ex = q.exact;
-    if (!ex) return null;
-    var hint = q.startOffset >= 0 ? q.startOffset : 0;
-    if (text.slice(hint, hint + ex.length) === ex) {
-      return { start: hint, end: hint + ex.length };
-    }
-    var best = -1;
-    var bestScore = -1;
-    var bestDist = Infinity;
-    var scanned = 0;
-    for (var idx = text.indexOf(ex); idx !== -1 && ++scanned <= 1000; idx = text.indexOf(ex, idx + 1)) {
-      var before = text.slice(Math.max(0, idx - CONTEXT_LEN), idx);
-      var after = text.slice(idx + ex.length, idx + ex.length + CONTEXT_LEN);
-      var sc = 0;
-      for (var i = 1; i <= q.prefix.length && i <= before.length; i++) {
-        if (q.prefix[q.prefix.length - i] !== before[before.length - i]) break;
-        sc++;
-      }
-      for (var j = 0; j < q.suffix.length && j < after.length; j++) {
-        if (q.suffix[j] !== after[j]) break;
-        sc++;
-      }
-      var dist = Math.abs(idx - hint);
-      if (sc > bestScore || (sc === bestScore && dist < bestDist)) {
-        best = idx;
-        bestScore = sc;
-        bestDist = dist;
-      }
-    }
-    return best === -1 ? null : { start: best, end: best + ex.length };
-  }
-
-  function collectLineRects(range, cap) {
-    var out = [];
-    var rects = range.getClientRects();
-    for (var i = 0; i < rects.length && out.length < cap; i++) {
-      var r = rects[i];
-      if (r.width > 0 && r.height > 0) {
-        out.push({ x: r.left, y: r.top, w: r.width, h: r.height });
-      }
-    }
-    return out;
-  }
-
-  function reportTextSel(full) {
-    if (!port) return;
-    var sel = window.getSelection();
-    var r = sel && !sel.isCollapsed && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
-    if (!r || !document.body || !document.body.contains(r.commonAncestorContainer)) {
-      if (hasTextSel) {
-        hasTextSel = false;
-        port.postMessage({ type: "textClear" });
-      }
-      return;
-    }
-    hasTextSel = true;
-    var br = r.getBoundingClientRect();
-    var msg = {
-      type: "textCapture",
-      rect: { x: br.left, y: br.top, w: br.width, h: br.height },
-      lineRects: collectLineRects(r, 80),
-    };
-    if (full) {
-      var live = document.body.textContent || "";
-      var so = textOffset(r.startContainer, r.startOffset);
-      var eo = textOffset(r.endContainer, r.endOffset);
-      if (so < 0 || eo < 0 || eo <= so) {
-        // Unanchorable selection (shadow root, foreign node). A
-        // rect-only post here would make the host pair the new rect
-        // with a stale prior anchor - clear instead.
-        hasTextSel = false;
-        port.postMessage({ type: "textClear" });
-        return;
-      }
-      // Denomination invariant: exact/prefix/suffix are byte-identical
-      // slices of body.textContent. Truncation adjusts endOffset so
-      // the host's (endOffset - startOffset === exact.length) shape
-      // check holds. Cut points back off surrogate halves - a lone
-      // surrogate would never relocate and fails UTF-8 persist.
-      var capped = Math.min(eo, so + EXACT_CAP);
-      if (capped < eo) {
-        var hc = live.charCodeAt(capped - 1);
-        if (hc >= 0xd800 && hc <= 0xdbff) capped--;
-      }
-      if (capped <= so) {
-        port.postMessage(msg);
-        return;
-      }
-      var pStart = Math.max(0, so - CONTEXT_LEN);
-      var pc = live.charCodeAt(pStart);
-      if (pc >= 0xdc00 && pc <= 0xdfff) pStart++;
-      var sEnd = Math.min(live.length, capped + CONTEXT_LEN);
-      if (sEnd < live.length) {
-        var sc = live.charCodeAt(sEnd - 1);
-        if (sc >= 0xd800 && sc <= 0xdbff) sEnd--;
-      }
-      msg.exact = live.slice(so, capped);
-      msg.prefix = live.slice(pStart, so);
-      msg.suffix = live.slice(capped, sEnd);
-      msg.startOffset = so;
-      msg.endOffset = capped;
-    }
-    port.postMessage(msg);
-  }
-
-  function clearSelection() {
-    if (selected) {
-      selected.classList.remove(SEL_CLASS);
-      selected = null;
-    }
-  }
-
-  // rAF-throttled cursor + hover-rect stream so the host can paint the
-  // inspector hover box (and knows the pointer is present) in comment mode.
-  var cursorPending = false;
-  var cursorX = -1;
-  var cursorY = -1;
-  function flushCursor() {
-    cursorPending = false;
-    if (!port) return;
-    var hover = null;
-    if (
-      hoverEl &&
-      hoverEl.nodeType === 1 &&
-      hoverEl !== document.body &&
-      hoverEl !== document.documentElement
-    ) {
-      var r = hoverEl.getBoundingClientRect();
-      if (r.width > 0 || r.height > 0) {
-        hover = { x: r.left, y: r.top, w: r.width, h: r.height };
-      }
-    }
-    port.postMessage({ type: "cursor", x: cursorX, y: cursorY, hover: hover });
-  }
-  function scheduleCursor() {
-    if (!cursorPending) {
-      cursorPending = true;
-      requestAnimationFrame(flushCursor);
-    }
-  }
-  function onMouseMove(ev) {
-    if (!mode || !port) return;
-    // Over the scrollbar gutter (clientX/Y past the content box) - hide
-    // the hover box like a leave.
-    var de = document.documentElement;
-    if (ev.clientX >= de.clientWidth || ev.clientY >= de.clientHeight) {
-      cursorX = -1;
-      cursorY = -1;
-      hoverEl = null;
-      scheduleCursor();
-      return;
-    }
-    cursorX = ev.clientX;
-    cursorY = ev.clientY;
-    hoverEl = ev.target;
-    scheduleCursor();
-  }
-  function onMouseLeave() {
-    if (!mode || !port) return;
-    cursorX = -1;
-    cursorY = -1;
-    hoverEl = null;
-    scheduleCursor();
-  }
-
-  function onClick(ev) {
-    if (!port) return;
-    if (!mode) {
-      // Mode off: don't intercept the page, just let the host close any
-      // open popover (thread card click-away). A non-collapsed selection
-      // means the click ended a drag-select - not a click-away.
-      var s = window.getSelection();
-      if (!s || s.isCollapsed) port.postMessage({ type: "clickAway" });
-      return;
-    }
-    ev.preventDefault();
-    ev.stopImmediatePropagation();
-    var el = ev.target;
-    if (!el || el.nodeType !== 1 || el === document.documentElement) return;
-    if (el === document.body && el.firstElementChild) {
-      // Pin on body is rarely intentional; keep it anyway but as body.
-    }
-    clearSelection();
-    selected = el;
-    el.classList.add(SEL_CLASS);
-    var rect = el.getBoundingClientRect();
-    var pinX = rect.width > 0 ? (ev.clientX - rect.left) / rect.width : 0.5;
-    var pinY = rect.height > 0 ? (ev.clientY - rect.top) / rect.height : 0.5;
-    port.postMessage({
-      type: "capture",
-      selector: selectorFor(el).slice(0, 1000),
-      textHint: visibleText(el).slice(0, 300),
-      descriptor: descriptorFor(el),
-      pinX: Math.min(1, Math.max(0, pinX)),
-      pinY: Math.min(1, Math.max(0, pinY)),
-      clientX: ev.clientX,
-      clientY: ev.clientY,
-      rectLeft: rect.left,
-      rectTop: rect.top,
-    });
-  }
-
-  function reportRects() {
-    rafPending = false;
-    if (!port) return;
-    // Selected element's live bounds - keeps the host's draft pin /
-    // inspector tag / composer glued through scroll and reflow.
-    if (selected) {
-      var sr = selected.getBoundingClientRect();
-      port.postMessage({
-        type: "selRect",
-        left: sr.left,
-        top: sr.top,
-        w: sr.width,
-        h: sr.height,
-        found:
-          (sr.width > 0 || sr.height > 0) &&
-          document.documentElement.contains(selected),
-      });
-    }
-    var rects = [];
-    for (var i = 0; i < pins.length; i++) {
-      var p = pins[i];
-      var el = null;
-      try {
-        el = document.querySelector(p.selector);
-      } catch (e) {
-        el = null;
-      }
-      if (!el) {
-        rects.push({ id: p.id, x: 0, y: 0, found: false });
-        continue;
-      }
-      var r = el.getBoundingClientRect();
-      if (r.width === 0 && r.height === 0) {
-        rects.push({ id: p.id, x: 0, y: 0, found: false });
-        continue;
-      }
-      rects.push({
-        id: p.id,
-        x: r.left + p.pinX * r.width,
-        y: r.top + p.pinY * r.height,
-        found: true,
-      });
-    }
-    var quoteRects = [];
-    if (quotes.length > 0) {
-      var live = null;
-      for (var qi = 0; qi < quotes.length; qi++) {
-        var q = quotes[qi];
-        var qr = quoteRanges[q.id];
-        if (qr === undefined) {
-          if (live === null) {
-            live = (document.body && document.body.textContent) || "";
-          }
-          var loc = locateQuote(live, q);
-          qr = (loc && rangeForOffsets(loc.start, loc.end)) || null;
-          quoteRanges[q.id] = qr;
-        }
-        // Zero paintable rects (display:none subtree) reports as
-        // not-found so the host docks it as detached instead of
-        // rendering nothing clickable.
-        var qlr = qr ? collectLineRects(qr, 80) : [];
-        quoteRects.push(
-          qlr.length > 0
-            ? { id: q.id, found: true, lineRects: qlr }
-            : { id: q.id, found: false, lineRects: [] }
-        );
-      }
-    }
-    port.postMessage({
-      type: "rects",
-      rects: rects,
-      quoteRects: quoteRects,
-      scrollY: window.scrollY || 0,
-    });
-  }
-
-  function scheduleRects() {
-    if (rafPending) return;
-    rafPending = true;
-    var done = false;
-    function run() {
-      if (done) return;
-      done = true;
-      reportRects();
-    }
-    // rAF for paint alignment, with a timeout fallback - rAF is
-    // suspended entirely in hidden tabs and pins must still settle
-    // when the tab becomes visible after background loading.
-    requestAnimationFrame(run);
-    setTimeout(run, 150);
-  }
-
-  function setMode(on) {
-    mode = !!on;
-    document.documentElement.toggleAttribute("data-cwhr-mode", mode);
-    if (!mode) {
-      hoverEl = null;
-      clearSelection();
-    }
-  }
-
-  function setComposing(open) {
-    document.documentElement.toggleAttribute("data-cwhr-composing", !!open);
-  }
-
-  function onPortMessage(ev) {
-    var data = ev.data;
-    if (!data) return;
-    if (data.type === "mode") setMode(data.on);
-    else if (data.type === "composing") setComposing(data.open);
-    else if (data.type === "pins") {
-      pins = Array.isArray(data.pins) ? data.pins : [];
-      scheduleRects();
-    } else if (data.type === "quotes") {
-      quotes = Array.isArray(data.quotes) ? data.quotes : [];
-      quoteRanges = Object.create(null);
-      scheduleRects();
-    } else if (data.type === "clearSelection") {
-      clearSelection();
-    } else if (data.type === "clearTextSel") {
-      var ts = window.getSelection();
-      if (ts) ts.removeAllRanges();
-      hasTextSel = false;
-    } else if (data.type === "restoreScroll") {
-      var ry = Number(data.y);
-      if (isFinite(ry) && ry > 0) {
-        // Apply now and again at load - late images/fonts can grow the
-        // document after the first attempt clamps short.
-        window.scrollTo(0, ry);
-        window.addEventListener("load", function () {
-          window.scrollTo(0, ry);
-        });
-      }
-    }
-  }
-
-  function start() {
-    injectStyle();
-    var channel = new _MessageChannel();
-    port = channel.port1;
-    port.onmessage = onPortMessage;
-    // Sandboxed srcdoc origins can be opaque; "*" is required. The
-    // payload carries only the mount token (multiple sandboxes can be
-    // mounted at once - the token routes the port to the right overlay)
-    // and the channel port itself is pairwise-secure.
-    _topPost(
-      { type: READY_TYPE, token: "4c3a15dd-bce6-43db-80d2-b8ee085fbd29" },
-      "*",
-      [channel.port2]
-    );
-    document.addEventListener("mousemove", onMouseMove, true);
-    // documentElement (not document, capture) so this fires only when the
-    // pointer leaves the viewport - capture-phase on document would fire for
-    // every intra-document element-boundary crossing.
-    document.documentElement.addEventListener("mouseleave", onMouseLeave);
-    document.addEventListener("click", onClick, true);
-    // Text-selection capture: commit on mouseup/keyup (Shift+Arrow),
-    // clear on collapse. Not mode-gated; highlight-to-comment is
-    // always on.
-    function onSelCommit() { reportTextSel(true); }
-    document.addEventListener("mouseup", onSelCommit, true);
-    document.addEventListener("keyup", onSelCommit, true);
-    document.addEventListener("selectionchange", function () {
-      var s = window.getSelection();
-      if (hasTextSel && (!s || s.isCollapsed)) reportTextSel(false);
-    });
-    document.addEventListener("keydown", function (ev) {
-      if (ev.key === "Escape" && port) port.postMessage({ type: "dismiss" });
-    }, true);
-    // Scroll/resize move the hovered element under a stationary pointer -
-    // re-report its rect so the host's inspector box tracks it. Mutations
-    // stay rects-only (animating pages would chatter the cursor stream).
-    var textSelPending = false;
-    function scheduleTextSel() {
-      if (textSelPending) return;
-      textSelPending = true;
-      requestAnimationFrame(function () {
-        textSelPending = false;
-        reportTextSel(false);
-      });
-    }
-    function onLayoutChange() {
-      scheduleRects();
-      if (mode && hoverEl) scheduleCursor();
-      if (hasTextSel) scheduleTextSel();
-    }
-    window.addEventListener("scroll", onLayoutChange, true);
-    window.addEventListener("resize", onLayoutChange);
-    // Full-cache invalidate per childList mutation is acceptable: CSS
-    // animation doesn't fire the observer; JS writers at frame rate
-    // would re-relocate every frame but are rare. characterData isn't
-    // observed, so .data= edits leave highlights stale until the next
-    // childList mutation.
-    var observer = new MutationObserver(function () {
-      quoteRanges = Object.create(null);
-      scheduleRects();
-      if (hasTextSel) scheduleTextSel();
-    });
-    function observe() {
-      if (document.body) observer.observe(document.body, { childList: true, subtree: true });
-    }
-    if (document.body) observe();
-    else document.addEventListener("DOMContentLoaded", observe);
-    // Settle pins after late layout (fonts, images).
-    setInterval(scheduleRects, 2000);
-  }
-
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", start);
-  } else {
-    start();
-  }
-})();
-</script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Power BI Tracker rollout – launch readiness</title>
@@ -1299,8 +159,6 @@ tr:last-child td { border-bottom: 0; }
 .pips i { width: 16px; height: 10px; border-radius: 2px; background: var(--line); }
 .pips i.f { background: var(--accent); }
 .pips i.d { background: var(--risk); }
-.pips i.c { background: var(--on); }
-.pill.dim { opacity: .65; border-style: dashed; }
 .unm { padding: 12px 18px; border-top: 1px solid var(--line); font-size: 14px; }
 .unm ul { margin: 6px 0 0; padding-left: 18px; }
 .dates { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
@@ -1444,8 +302,6 @@ th { background: var(--head-bg); }
 
 /* version stamp and leadership summary */
 .topbar .name .stamp { font-weight: 400; font-size: 12px; opacity: .9; margin-top: 2px; }
-.sumhead { padding: 10px 18px; border-bottom: 1px solid var(--line); background: var(--head-bg); font-size: 13.5px; }
-.sumhead div { margin: 2px 0; }
 .sumtext { margin: 0; padding: 14px 18px; white-space: pre-wrap; font: 13.5px/1.55 var(--sans); }
 
 /* add / remove items (edit mode) */
@@ -1455,43 +311,9 @@ th { background: var(--head-bg); }
 .addrow label.wide { flex: 2 1 260px; }
 .addrow input, .addrow select { padding: 5px 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 4px; font-size: 13px; }
 .rowbtns { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
-
-/* training and office-hours rows on the timeline */
-.tick { all: unset; box-sizing: border-box; position: absolute; top: 15px; width: 10px; height: 10px; margin-left: -5px; transform: rotate(45deg); cursor: pointer; background: var(--c); border: 1.5px solid var(--surface); box-shadow: 0 0 0 1px var(--c); }
-.tick.dim { opacity: .45; }
-.tick.sel { outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 3px; }
-.tick:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
-.serline { position: absolute; top: 19px; height: 2px; background: color-mix(in srgb, var(--idle) 45%, transparent); }
-.detail ul.sessions { padding-left: 16px; }
-.detail ul.sessions li { margin: 3px 0; }
-.s-sent { --c: var(--accent); }
-.pips i.p { background: var(--idle); }
-
-/* publish to GitHub panel */
-pre.cmd { margin: 0; padding: 10px 14px; background: var(--bg); border-top: 1px solid var(--line); white-space: pre-wrap; word-break: break-all; font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.gitsteps { padding: 8px 14px 12px; border-top: 1px solid var(--line); font-size: 13px; }
-.gitsteps summary { cursor: pointer; font-weight: 600; margin-bottom: 6px; }
-.gitsteps pre.cmd { border: 1px solid var(--line); border-radius: 4px; margin-bottom: 8px; }
-@media print { #gitPanel { display: none !important; } }
-
-/* who was invited */
-.linkbtn { all: unset; cursor: pointer; color: var(--accent); text-decoration: underline; }
-.linkbtn:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
-.modal { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); display: flex; align-items: center; justify-content: center; z-index: 30; }
-.modal[hidden] { display: none; }
-.modal .box { background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; width: min(540px, 92vw); max-height: 80vh; overflow: auto; }
-.modal header { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--head-bg); }
-.modal h2 { font-size: 17px; }
-#whoBody { padding: 10px 14px 14px; }
-#whoBody h4 { margin: 10px 0 4px; font-size: 12px; color: var(--muted); }
-#whoBody ul { margin: 0; padding-left: 18px; columns: 1; }
-#whoBody li { margin: 2px 0; }
-@media print { .modal { display: none !important; } }
-.pubnames { display: block; padding: 8px 14px; font-size: 13px; border-top: 1px solid var(--line); }
-.pubnames input { margin-right: 6px; }
 </style>
 </head>
-<body id="artifacts-component-root-html">
+<body>
 <div class="wrap">
 
   <div class="topbar">
@@ -1509,17 +331,6 @@ pre.cmd { margin: 0; padding: 10px 14px; background: var(--bg); border-top: 1px 
       <button class="btn primary" id="copyBtn">Copy leadership update</button>
     </div>
   </div>
-
-  <section class="panel editor-only" id="gitPanel" hidden="" aria-labelledby="gitTitle" style="margin-bottom:10px">
-    <header><div><h2 id="gitTitle">Publish to GitHub</h2><p class="sub">Two steps: click <b>Publish updated file</b> above, then paste the line below into Terminal and press Return.</p></div>
-      <button class="btn small" id="copyGit">Copy command</button></header>
-    <label class="pubnames"><input type="checkbox" id="pubNames"> Include invited names when I publish (only if the page is private)</label>
-    <pre class="cmd" id="gitOne"></pre>
-    <details class="gitsteps"><summary>Or run it one step at a time</summary>
-      <pre class="cmd" id="gitSteps"></pre>
-      <button class="btn small" id="copyGitSteps">Copy these steps</button>
-    </details>
-  </section>
 
   <nav class="tabs" aria-label="Dashboard sections">
     <div class="tablist" role="tablist">
@@ -1565,7 +376,6 @@ pre.cmd { margin: 0; padding: 10px 14px; background: var(--bg); border-top: 1px 
       <div class="legend">
         <span class="s-on"><i class="sw"></i>On track or complete</span>
         <span class="s-idle"><i class="sw"></i>Planned or scheduled</span>
-        <span class="s-sent"><i class="sw"></i>Invite sent</span>
         <span class="s-risk"><i class="sw"></i>At risk</span>
         <span class="s-off"><i class="sw"></i>Off track</span>
         <span>Diamond = a single date. Bar = a date range. Faded = scheduled date has passed.</span>
@@ -1581,17 +391,8 @@ pre.cmd { margin: 0; padding: 10px 14px; background: var(--bg); border-top: 1px 
   <section class="panel section" aria-labelledby="sumTitle">
     <header>
       <div><h2 id="sumTitle">Leadership summary</h2><p class="sub">Written from the dashboard each time something changes. Copy it into an email.</p></div>
-      <div class="rowbtns">
-        <button class="btn small" id="copySubject">Copy subject</button>
-        <button class="btn small" id="copyTo">Copy recipients</button>
-        <button class="btn small" id="copyBody">Copy message</button>
-        <button class="btn small" id="copySummary">Copy everything</button>
-      </div>
+      <button class="btn" id="copySummary">Copy summary</button>
     </header>
-    <div class="sumhead">
-      <div><b>Subject:</b> <span id="sumSubject"></span></div>
-      <div><b>To:</b> <span id="sumTo"></span></div>
-    </div>
     <pre class="sumtext" id="sumText"></pre>
   </section>
   </div>
@@ -1623,7 +424,6 @@ pre.cmd { margin: 0; padding: 10px 14px; background: var(--bg); border-top: 1px 
         <button class="mchip" data-mf="all" aria-pressed="true">All</button>
         <button class="mchip" data-mf="missing" aria-pressed="false">Not on calendar</button>
         <button class="mchip" data-mf="diff" aria-pressed="false">Date differs</button>
-        <button class="mchip" data-mf="ready" aria-pressed="false">Ready to complete</button>
         <button class="btn small" id="copyTitles">Copy title list</button>
       </div>
     </header>
@@ -1675,17 +475,11 @@ pre.cmd { margin: 0; padding: 10px 14px; background: var(--bg); border-top: 1px 
   </section>
   </div>
 </div>
-<div class="modal" id="whoModal" role="dialog" aria-modal="true" aria-labelledby="whoTitle" hidden="">
-  <div class="box">
-    <header><h2 id="whoTitle"></h2><button class="btn small" id="whoClose" data-close-who="">Close</button></header>
-    <div id="whoBody"></div>
-  </div>
-</div>
 <div class="toast" id="toast" role="status"></div>
 
 <script>
 const PRISTINE = "<!DOCTYPE html>\n" + document.documentElement.outerHTML; // clean copy used by "Publish updated file"
-const BAKED = {"app":"pbi-tracker-readiness","version":1,"publishVersion":7,"updatedBy":"Nancy","publishNames":true,"savedAt":"2026-10-22T01:33:44.538Z","items":{"rollout":{"status":"On Track","done":[false,false,false,false],"note":"","prev":""},"delivery-ready":{"status":"On Track","done":[false,false,false,false],"note":"","prev":""},"sales-readiness-3":{"status":"Planned","done":[false,false,false],"note":"","prev":""},"sales-attestation":{"status":"Planned","done":[false,false,false,false],"note":"","prev":""},"tracker-ready":{"status":"Planned","done":[false,false,false,false],"note":"","prev":""},"business-sales":{"status":"Planned","done":[false,false,false,false],"note":"","prev":""},"executive-ready":{"status":"Planned","done":[false,false,false,false],"note":"","prev":""},"golive-comms":{"status":"Planned","done":[false,false,false,false],"note":"","prev":""},"stabilization":{"status":"Planned","done":[false,false,false,false],"note":"","prev":""},"design":{"status":"Scheduled","done":[false,false],"note":"","prev":""},"collateral":{"status":"Scheduled","done":[false,false,false,false],"note":"","prev":""},"qc-release":{"status":"Scheduled","done":[false],"note":"","prev":""},"bdd":{"status":"Scheduled","done":[false],"note":"","prev":""},"optimization":{"status":"Scheduled","done":[false],"note":"","prev":""},"final":{"status":"Scheduled","done":[false,false,false],"note":"","prev":""},"launch":{"status":"Scheduled","done":[false],"note":"","prev":""},"wave1":{"status":"Scheduled","done":[false,false],"note":"","prev":""},"wave2":{"status":"Scheduled","done":[false,false],"note":"","prev":""},"wave3":{"status":"Scheduled","done":[false,false],"note":"","prev":""},"wave4":{"status":"Scheduled","done":[false],"note":"","prev":""},"wave5":{"status":"Scheduled","done":[false],"note":"","prev":""},"newhire":{"status":"Planned","done":[false,false,false],"note":"","prev":""},"oh-recurring":{"status":"Scheduled","done":[false,false,false],"note":"","prev":""}},"open":{"o1":false,"o2":false,"o3":false,"o4":false,"o5":false,"o6":false,"o7":false,"c1792154808515":false},"risks":[{"risk":"Training attendance or coverage gaps","level":"Low","status":"Open"},{"risk":"Sales attestation not completed by November 30","level":"Medium","status":"Open"},{"risk":"Late feedback before final incorporation on December 3","level":"Low","status":"Open"},{"risk":"Post-go-live support demand remains elevated","level":"Low","status":"Open"}],"comms":[{"name":"Rollout and communications approval","status":"Planned"},{"name":"Training program launch","status":"Planned"},{"name":"Business and sales readiness update","status":"Planned"},{"name":"Executive readiness summary","status":"Planned"},{"name":"Go-live communication","status":"Planned"},{"name":"Post-launch adoption update","status":"Planned"},{"name":"Adoption and stabilization summary","status":"Planned"}],"addedRisks":[],"removedRisks":["PDF automation testing issues"],"addedOpen":[{"id":"c1792154808515","q":"Confirm all Meetings have been scheduled","owner":"Nancy","due":"Oct 26","done":false}],"removedOpen":[],"meetingsDone":[],"meetingsHeld":[]}; // statuses published into this file by "Publish updated file"
+const BAKED = {"app":"pbi-tracker-readiness","version":1,"publishVersion":3,"updatedBy":"Nancy","savedAt":"2026-10-16T12:47:24.782Z","items":{"rollout":{"status":"On Track","done":[false,false,false,false],"note":""},"delivery-ready":{"status":"On Track","done":[false,false,false,false],"note":""},"sales-attestation":{"status":"Planned","done":[false,false,false],"note":""},"tracker-ready":{"status":"Planned","done":[false,false,false,false],"note":""},"business-sales":{"status":"Planned","done":[false,false,false,false],"note":""},"executive-ready":{"status":"Planned","done":[false,false,false,false],"note":""},"golive-comms":{"status":"Planned","done":[false,false,false,false],"note":""},"stabilization":{"status":"Planned","done":[false,false,false,false],"note":""},"design":{"status":"Scheduled","done":[false,false],"note":""},"collateral":{"status":"Scheduled","done":[false,false,false,false],"note":""},"qc-release":{"status":"Scheduled","done":[false],"note":""},"bdd":{"status":"Scheduled","done":[false],"note":""},"optimization":{"status":"Scheduled","done":[false],"note":""},"final":{"status":"Scheduled","done":[false,false,false],"note":""},"launch":{"status":"Scheduled","done":[false],"note":""},"wave1":{"status":"Scheduled","done":[false,false],"note":""},"wave2":{"status":"Scheduled","done":[false,false],"note":""},"wave3":{"status":"Scheduled","done":[false,false],"note":""},"wave4":{"status":"Scheduled","done":[false],"note":""},"wave5":{"status":"Scheduled","done":[false],"note":""},"newhire":{"status":"Planned","done":[false,false,false],"note":""},"oh-recurring":{"status":"Scheduled","done":[false,false,false],"note":""}},"open":{"o1":false,"o2":false,"o3":false,"o4":false,"c1792154808515":false},"risks":[{"risk":"Training attendance or coverage gaps","level":"Low","status":"Open"},{"risk":"Sales attestation not completed by November 20","level":"Medium","status":"Open"},{"risk":"Late feedback before final incorporation on December 3","level":"Low","status":"Open"},{"risk":"Post-go-live support demand remains elevated","level":"Low","status":"Open"}],"comms":[{"name":"Rollout and communications approval","status":"Planned"},{"name":"Training program launch","status":"Planned"},{"name":"Business and sales readiness update","status":"Planned"},{"name":"Executive readiness summary","status":"Planned"},{"name":"Go-live communication","status":"Planned"},{"name":"Post-launch adoption update","status":"Planned"},{"name":"Adoption and stabilization summary","status":"Planned"}],"addedRisks":[],"removedRisks":["PDF automation testing issues"],"addedOpen":[{"id":"c1792154808515","q":"Confirm all Meetings have been scheduled","owner":"Nancy","due":"Oct 26","done":false}],"removedOpen":[]}; // statuses published into this file by "Publish updated file"
 /* =====================================================================
    DATA – taken from power_bi_tracker_rollout_dashboard_v6_calendar_reconciliation.html
    Edit this block to update the dashboard. Nothing is simulated.
@@ -1702,9 +496,8 @@ const TODAY = TODAY_OVERRIDE || (() => { const d = new Date(); return d.getFullY
 const GO_LIVE = "2026-12-04";
 const GO_LIVE_TIME = "9:00 AM CT";
 const UPDATED_BY = "Nancy";      // shown as "Last updated by ..." in the header
-const GIT_FOLDER = "~/Documents/powerbi-tracker-readines"; // the folder where you cloned the GitHub repository
 const VERSION_BASE = 1;          // version of the file as first delivered; each "Publish updated file" adds 1
-const SUMMARY_TO = ["Danyelle Brausen", "Lydia Zheng", "Brandon Peters", "Brian Schmidt", "Justin Taylor", "Lisa Vicicondi", "Nick Rutledge", "Kim Pennington"]; // Leadership summary recipients
+const SUMMARY_TO = ["Danyelle Brausen", "Lydia Zheng", "Brandon Peters", "Brian Schmidt", "Justin Taylor"]; // Leadership summary recipients
 
 const LANES = [
   { id: "gates", group: "gates", title: "Readiness gates", items: [
@@ -1716,31 +509,27 @@ const LANES = [
       criteria: ["Final Tracker design approved", "PDF design signed off", "Training materials ready", "Training program launched"],
       training: ["Training #1", "#2"], office: ["Office hours start Nov 2"], deliverables: ["Final Power BI Tracker Design", "PDF Design Signoff"],
       risks: ["Training starts before all supporting content is stable"], mitigations: ["Freeze core training content and log deltas separately"] },
-    { id: "sales-readiness-3", date: "2026-11-09", title: "Tracker Rollout: Sales Readiness 1", status: "Planned", owners: ["Brandon Peters", "Brian Schmidt", "Justin Taylor", "Nancy Selvanathan"],
-      criteria: ["Feedback from recent training reviewed", "Field readiness and adoption risks discussed", "Leadership confidence level captured"],
-      training: ["Training #5"], office: ["Office hours, Nov 9"], deliverables: ["Sales readiness pulse check"],
-      risks: ["Low participation or unresolved field concerns"], mitigations: ["Use sales leaders to reinforce attendance and close gaps"] },
-    { id: "sales-attestation", date: "2026-11-11", end: "2026-11-30", title: "Assessment: Sales Attestation", status: "Planned", owners: ["Twana Holmes", "Laura Slayton"],
-      criteria: ["Sales test environment available", "Testing and readiness expectations communicated", "Run as a joint effort between Sales Enablement and Optimization", "Sales attestation completed by Nov 30"],
-      training: ["Training #3-10"], office: ["Office hours, Nov 2 to 30"], deliverables: ["Sales attestation due Nov 30 (joint Sales Enablement and Optimization effort)", "Testing-readiness results"],
+    { id: "sales-attestation", date: "2026-11-11", end: "2026-11-20", title: "Assessment: Sales Attestation", status: "Planned", owners: ["Twana Holmes", "Laura Slayton"],
+      criteria: ["Sales test environment available", "Testing and readiness expectations communicated", "Sales attestation completed by Nov 20"],
+      training: ["Training #3-8"], office: ["Office hours, Nov 2 to 18"], deliverables: ["Sales attestation due Nov 20", "Testing-readiness results"],
       risks: ["Testing feedback is not completed before the readiness gate"], mitigations: ["Track attestations and escalate outstanding responses"] },
     { id: "tracker-ready", date: "2026-11-13", title: "Power BI Tracker Readiness", status: "Planned", owners: ["Mayte Atienza"],
-      criteria: ["Repeated training established", "FAQs (with Unity feedback) and Highspot recordings available", "Readiness feedback tracked", "Priority issues assigned"],
+      criteria: ["Repeated training established", "FAQs and recordings available", "Readiness feedback tracked", "Priority issues assigned"],
       training: ["Training #1-6"], office: ["Office hours, Nov 2 to 11"], deliverables: ["QC Tracker Release", "BDD QC Completion"],
       risks: ["Recurring questions indicate unclear guidance"], mitigations: ["Update FAQ and demonstration script after each session"] },
-    { id: "business-sales", date: "2026-11-20", title: "Tracker Rollout: Sales Readiness 2", status: "Planned", owners: ["Brandon Peters", "Brian Schmidt", "Justin Taylor", "Nancy Selvanathan"],
+    { id: "business-sales", date: "2026-11-20", title: "Business & Sales Readiness", status: "Planned", owners: ["Brandon Peters", "Brian Schmidt", "Justin Taylor", "Nancy Selvanathan"],
       criteria: ["Business scenarios validated", "Training participation reviewed", "Sales leadership briefed", "Adoption risks documented"],
       training: ["Training #1-8"], office: ["Office hours, Nov 2 to 18"], deliverables: ["Optimization QC Completion", "Field feedback review"],
       risks: ["Low participation or unresolved field concerns"], mitigations: ["Use sales leaders to reinforce attendance and close gaps"] },
-    { id: "executive-ready", date: "2026-11-30", email: true, title: "Tracker Rollout: Sales Readiness 3", status: "Planned", owners: ["Brandon Peters", "Brian Schmidt", "Justin Taylor", "Nancy Selvanathan"],
+    { id: "executive-ready", date: "2026-11-23", title: "Executive Readiness Review", status: "Planned", owners: ["Brandon Peters", "Brian Schmidt", "Justin Taylor", "Nancy Selvanathan"],
       criteria: ["Readiness status summarized", "Risks and decisions visible", "Support model confirmed", "Launch narrative aligned"],
-      training: ["Training #10"], office: ["Office hours, Nov 30"], deliverables: ["Executive readiness summary (sent by email)"],
+      training: ["Training #9"], office: ["Office hours, Nov 23 and 25"], deliverables: ["Executive readiness summary"],
       risks: ["Leadership receives fragmented status"], mitigations: ["Use one-page executive readout from this dashboard"] },
     { id: "golive-comms", date: "2026-12-01", title: "Go-Live Communication Released", status: "Planned", owners: ["Nancy Selvanathan"],
       criteria: ["Go-live message distributed", "Support channels published", "Training recordings linked", "Post-launch schedule shared"],
       training: ["Training #10"], office: ["Office hours, Nov 30 and Dec 2"], deliverables: ["Go-live communication", "Support resources"],
       risks: ["Users miss launch expectations"], mitigations: ["Cascade through GPO Optimization and sales leadership"] },
-    { id: "stabilization", date: "2027-01-08", title: "Adoption & Stabilization Review", status: "Planned", owners: ["Thit Lwin Oo", "Mayte Atienza", "Nancy Selvanathan"], post: true,
+    { id: "stabilization", date: "2027-01-08", title: "Adoption & Stabilization Review", status: "Planned", owners: ["Thit Lwin Oo", "Nancy Selvanathan"], post: true,
       criteria: ["Four weeks of support completed", "Adoption and issues reviewed", "Outstanding actions assigned", "Steady-state support transition agreed"],
       training: ["Training #11-14"], office: ["Office hours, Dec 7 and 9"], deliverables: ["Adoption review", "Stabilization summary"],
       risks: ["Support demand remains elevated"], mitigations: ["Extend targeted coaching for high-need user groups"] }
@@ -1749,7 +538,7 @@ const LANES = [
     { id: "design", date: "2026-10-26", title: "Final Tracker Design + PDF Signoff", status: "Scheduled", owners: ["Mayte Atienza", "Thit Lwin Oo", "Nancy Selvanathan"],
       criteria: ["Final Power BI Tracker design approved", "PDF design signoff complete"] },
     { id: "collateral", date: "2026-10-26", title: "Training Collateral Ready", status: "Scheduled", owners: ["Mayte Atienza", "Nancy Selvanathan"],
-      criteria: ["Quick reference guide ready", "Training materials ready", "FAQs published, including feedback from Unity", "Best Practice Walkthrough recordings on Highspot for Unity, Oncology and MSPL"] },
+      criteria: ["Quick reference guide ready", "Training materials ready", "FAQs published", "Recordings available"] },
     { id: "qc-release", date: "2026-11-02", title: "QC Tracker Release", status: "Scheduled", owners: ["Mayte Atienza"], criteria: ["QC release issued"] },
     { id: "bdd", date: "2026-11-11", title: "BDD QC Completion", status: "Scheduled", owners: ["Mayte Atienza"], criteria: ["BDD quality-control activities complete"] },
     { id: "optimization", date: "2026-11-20", title: "Optimization QC Completion", status: "Scheduled", owners: ["Mayte Atienza"], criteria: ["Optimization quality-control activities complete"] },
@@ -1758,15 +547,15 @@ const LANES = [
     { id: "launch", date: GO_LIVE, title: "Power BI Tracker Go-Live", status: "Scheduled", owners: ["Entire Rollout Team"], criteria: ["Power BI Tracker released"], launch: true }
   ]},
   { id: "waves", group: "training", title: "Training and adoption waves", items: [
-    { id: "wave1", date: "2026-10-26", end: "2026-10-30", title: "Wave 1: Training #1-2", status: "Scheduled", owners: ["Laura Slayton", "Twana Holmes", "Brandon Peters", "Brian Schmidt", "Justin Taylor", "Nancy Selvanathan"],
+    { id: "wave1", date: "2026-10-26", end: "2026-10-30", title: "Wave 1: Training #1-2", status: "Scheduled", owners: ["Laura Slayton", "Twana Holmes", "Brandon Peters", "Justin Taylor", "Nancy Selvanathan"],
       criteria: ["Full feature training repeated twice", "Questions captured during training"], supports: "Delivery Readiness" },
-    { id: "wave2", date: "2026-11-02", end: "2026-11-13", title: "Wave 2: Training #3-6 + office hours", status: "Scheduled", owners: ["Laura Slayton", "Twana Holmes", "Brandon Peters", "Brian Schmidt", "Justin Taylor", "Nancy Selvanathan"],
+    { id: "wave2", date: "2026-11-02", end: "2026-11-13", title: "Wave 2: Training #3-6 + office hours", status: "Scheduled", owners: ["Laura Slayton", "Twana Holmes", "Brandon Peters", "Justin Taylor", "Nancy Selvanathan"],
       criteria: ["Broad exposure expanded", "FAQs refined"], supports: "Power BI Tracker Readiness" },
-    { id: "wave3", date: "2026-11-16", end: "2026-11-20", title: "Wave 3: Training #7-8 + office hours", status: "Scheduled", owners: ["Laura Slayton", "Twana Holmes", "Brandon Peters", "Brian Schmidt", "Justin Taylor", "Nancy Selvanathan"],
-      criteria: ["Field readiness validated", "Adoption risks identified"], supports: "Tracker Rollout: Sales Readiness 2" },
-    { id: "wave4", date: "2026-11-23", end: "2026-12-02", title: "Wave 4: Training #9-10 + office hours", status: "Scheduled", owners: ["Laura Slayton", "Twana Holmes", "Brandon Peters", "Brian Schmidt", "Justin Taylor", "Nancy Selvanathan"],
-      criteria: ["Final pre-launch reinforcement complete"], supports: "Tracker Rollout: Sales Readiness 3 + Go-Live Communication" },
-    { id: "wave5", date: "2026-12-07", end: "2027-01-01", title: "Post-launch: Training #11-14 + office hours (to Dec 9)", status: "Scheduled", owners: ["Laura Slayton", "Twana Holmes", "Brandon Peters", "Brian Schmidt", "Justin Taylor", "Nancy Selvanathan"], post: true,
+    { id: "wave3", date: "2026-11-16", end: "2026-11-20", title: "Wave 3: Training #7-8 + office hours", status: "Scheduled", owners: ["Laura Slayton", "Twana Holmes", "Brandon Peters", "Justin Taylor", "Nancy Selvanathan"],
+      criteria: ["Field readiness validated", "Adoption risks identified"], supports: "Business & Sales Readiness" },
+    { id: "wave4", date: "2026-11-23", end: "2026-12-02", title: "Wave 4: Training #9-10 + office hours", status: "Scheduled", owners: ["Laura Slayton", "Twana Holmes", "Brandon Peters", "Justin Taylor", "Nancy Selvanathan"],
+      criteria: ["Final pre-launch reinforcement complete"], supports: "Executive Readiness + Go-Live Communication" },
+    { id: "wave5", date: "2026-12-07", end: "2027-01-01", title: "Post-launch: Training #11-14 + office hours (to Dec 9)", status: "Scheduled", owners: ["Laura Slayton", "Twana Holmes", "Brandon Peters", "Justin Taylor", "Nancy Selvanathan"], post: true,
       criteria: ["Four weeks of post-launch enablement complete"], supports: "Adoption & Stabilization" },
     { id: "newhire", date: "2026-11-16", title: "New-Hire Training Incorporated (due before Accelerate)", status: "Planned", owners: ["Twana Holmes", "Laura Slayton"],
       criteria: ["Power BI Tracker content incorporated into upcoming new-hire training", "Training completed before Accelerate", "Completion and readiness confirmed"],
@@ -1792,8 +581,8 @@ const TITLES = {
   "delivery-ready": "Delivery Readiness",
   "sales-attestation": "Sales Attestation Window",
   "tracker-ready": "Tracker Readiness",
-  "business-sales": "Tracker Rollout: Sales Readiness 2",
-  "sales-readiness-3": "Tracker Rollout: Sales Readiness 1",
+  "business-sales": "Business and Sales Readiness",
+  "executive-ready": "Executive Readiness Review",
   "golive-comms": "Power BI Tracker Go-Live Communication",
   "stabilization": "Adoption and Stabilization Review",
   "design": "Final Design and PDF Signoff",
@@ -1805,118 +594,25 @@ const TITLES = {
   "launch": "Power BI Tracker Go-Live",
   "newhire": "New-Hire Training Incorporated"
 };
-/* Calendar meetings that are parts of a planned item. They are shown under that item and are not flagged as unmatched. */
-const MEETING_PARTS = {
-  "Power BI Tracker Comms: Rollout and Communications Approval": [
-    { label: "Part 1 (Optimization LT)", title: "Power BI Tracker: Review Open items & Sales Rollout Plan" },
-    { label: "Part 2", title: "Power BI Tracker | Sales Training Rollout Plan Review & Kickoff" }
-  ]
-};
-/* Older invite titles that are still accepted until the invite is renamed in Outlook. */
-const TITLE_ALIASES = {};
-/* Planned items whose detail panel shows the Teams link and invited list from the calendar sync. */
-const SALES_MEETING_IDS = ["business-sales", "sales-readiness-3"];
-const EMAIL_TITLES = ["Executive Readiness Review", "Tracker Rollout: Sales Readiness 3"]; // items that are emails now, so they no longer need a calendar meeting
 const TRAINING_TITLE = n => "Power BI Tracker Training #" + n;
 const OFFICE_TITLE = n => "Power BI Tracker Office Hours #" + n;
-
-/* People invited to each meeting (names only). Filled in by the calendar sync, keyed by meeting title.
-   When you click "Publish updated file", these names are removed from the published copy unless PUBLISH_ATTENDEE_NAMES is true. */
-const PUBLISH_ATTENDEE_NAMES = false;
-const ATTENDEES = {
-  "Delivery Readiness": [{"name": "Mayte Atienza", "type": "Required", "response": "No response yet"}],
-  "Tracker Readiness": [{"name": "Mayte Atienza", "type": "Required", "response": "No response yet"}, {"name": "Thit Lwin Oo", "type": "Required", "response": "No response yet"}],
-  "Tracker Rollout: Sales Readiness 1": [{"name": "Lisa Vicicondi", "type": "Required", "response": "Declined"}, {"name": "Nick Rutledge", "type": "Required", "response": "No response yet"}, {"name": "Kimberley Pennington", "type": "Required", "response": "No response yet"}, {"name": "Brandon Peters", "type": "Required", "response": "No response yet"}, {"name": "Danyelle Doolittle Brausen", "type": "Required", "response": "No response yet"}, {"name": "Brian A Schmidt", "type": "Required", "response": "No response yet"}, {"name": "Justin Taylor", "type": "Required", "response": "No response yet"}, {"name": "Lydia Zheng", "type": "Required", "response": "No response yet"}, {"name": "Mayte Atienza", "type": "Required", "response": "No response yet"}, {"name": "Twana Holmes", "type": "Required", "response": "No response yet"}, {"name": "Laura Slayton", "type": "Required", "response": "No response yet"}],
-  "Tracker Rollout: Sales Readiness 2": [{"name": "Lisa Vicicondi", "type": "Required", "response": "No response yet"}, {"name": "Nick Rutledge", "type": "Required", "response": "No response yet"}, {"name": "Kimberley Pennington", "type": "Required", "response": "No response yet"}, {"name": "Brandon Peters", "type": "Required", "response": "No response yet"}, {"name": "Danyelle Doolittle Brausen", "type": "Required", "response": "No response yet"}, {"name": "Brian A Schmidt", "type": "Required", "response": "No response yet"}, {"name": "Justin Taylor", "type": "Required", "response": "No response yet"}, {"name": "Lydia Zheng", "type": "Required", "response": "No response yet"}, {"name": "Mayte Atienza", "type": "Required", "response": "No response yet"}, {"name": "Twana Holmes", "type": "Required", "response": "No response yet"}, {"name": "Laura Slayton", "type": "Required", "response": "No response yet"}],
-  "Power BI Tracker Training #1": [{"name": "Helen Raines", "type": "Required", "response": "No response yet"}, {"name": "Matt Martin", "type": "Required", "response": "No response yet"}, {"name": "Brandon Peters", "type": "Required", "response": "No response yet"}, {"name": "Brian A Schmidt", "type": "Required", "response": "No response yet"}, {"name": "Ryan Cole", "type": "Required", "response": "No response yet"}, {"name": "Kara Tuggle", "type": "Required", "response": "No response yet"}, {"name": "Brian Ballinger", "type": "Required", "response": "No response yet"}, {"name": "Victoria Black", "type": "Required", "response": "No response yet"}, {"name": "Cory R Miller", "type": "Required", "response": "No response yet"}, {"name": "Jesse Hawke", "type": "Required", "response": "No response yet"}, {"name": "Jamie Weathers", "type": "Required", "response": "No response yet"}, {"name": "Bryan Overton", "type": "Required", "response": "No response yet"}, {"name": "Kathryn Perkins", "type": "Required", "response": "No response yet"}, {"name": "Ashlee Traynham", "type": "Required", "response": "No response yet"}, {"name": "Lydia Zheng", "type": "Required", "response": "No response yet"}, {"name": "Mayte Atienza", "type": "Required", "response": "No response yet"}, {"name": "Lisa Vicicondi", "type": "Optional", "response": "No response yet"}, {"name": "Kimberley Pennington", "type": "Optional", "response": "No response yet"}, {"name": "Danyelle Doolittle Brausen", "type": "Optional", "response": "No response yet"}, {"name": "Nick Rutledge", "type": "Optional", "response": "No response yet"}, {"name": "Twana Holmes", "type": "Invited", "response": "No response yet"}, {"name": "Laura Slayton", "type": "Invited", "response": "No response yet"}],
-  "Power BI Tracker Training #2": [{"name": "Provider Solutions Field Account Management", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP Customer Success Managers", "type": "Required", "response": "No response yet", "group": true}, {"name": "Laura Slayton", "type": "Required", "response": "No response yet"}, {"name": "Twana Holmes", "type": "Required", "response": "No response yet"}, {"name": "Brandon Peters", "type": "Required", "response": "No response yet"}, {"name": "Brian A Schmidt", "type": "Required", "response": "No response yet"}, {"name": "Justin Taylor", "type": "Required", "response": "No response yet"}, {"name": "Mayte Atienza", "type": "Required", "response": "No response yet"}, {"name": "Kesley Pittman", "type": "Required", "response": "No response yet"}, {"name": "Michelle Crantek", "type": "Required", "response": "No response yet"}, {"name": "Danyelle Doolittle Brausen", "type": "Optional", "response": "No response yet"}, {"name": "Lydia Zheng", "type": "Optional", "response": "No response yet"}, {"name": "Miranda Fair", "type": "Optional", "response": "No response yet"}],
-  "Power BI Tracker Training #3": [{"name": "Provider Solutions Field Account Management", "type": "Invited", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Invited", "group": true}, {"name": "GRP Customer Success Managers", "type": "Invited", "group": true}, {"name": "Laura Slayton", "type": "Invited"}, {"name": "Twana Holmes", "type": "Invited"}, {"name": "Brandon Peters", "type": "Invited"}, {"name": "Brian A Schmidt", "type": "Invited"}, {"name": "Justin Taylor", "type": "Invited"}, {"name": "Mayte Atienza", "type": "Invited"}, {"name": "Kesley Pittman", "type": "Invited"}, {"name": "Michelle Crantek", "type": "Invited"}, {"name": "Danyelle Doolittle Brausen", "type": "Invited"}, {"name": "Lydia Zheng", "type": "Invited"}, {"name": "Miranda Fair", "type": "Invited"}],
-  "Power BI Tracker Training #4": [{"name": "Provider Solutions Field Account Management", "type": "Invited", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Invited", "group": true}, {"name": "GRP Customer Success Managers", "type": "Invited", "group": true}, {"name": "Laura Slayton", "type": "Invited"}, {"name": "Twana Holmes", "type": "Invited"}, {"name": "Brandon Peters", "type": "Invited"}, {"name": "Brian A Schmidt", "type": "Invited"}, {"name": "Justin Taylor", "type": "Invited"}, {"name": "Mayte Atienza", "type": "Invited"}, {"name": "Kesley Pittman", "type": "Invited"}, {"name": "Michelle Crantek", "type": "Invited"}, {"name": "Danyelle Doolittle Brausen", "type": "Invited"}, {"name": "Lydia Zheng", "type": "Invited"}, {"name": "Miranda Fair", "type": "Invited"}],
-  "Power BI Tracker Training #5": [{"name": "Provider Solutions Field Account Management", "type": "Invited", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Invited", "group": true}, {"name": "GRP Customer Success Managers", "type": "Invited", "group": true}, {"name": "Laura Slayton", "type": "Invited"}, {"name": "Twana Holmes", "type": "Invited"}, {"name": "Brandon Peters", "type": "Invited"}, {"name": "Brian A Schmidt", "type": "Invited"}, {"name": "Justin Taylor", "type": "Invited"}, {"name": "Mayte Atienza", "type": "Invited"}, {"name": "Kesley Pittman", "type": "Invited"}, {"name": "Michelle Crantek", "type": "Invited"}, {"name": "Danyelle Doolittle Brausen", "type": "Invited"}, {"name": "Lydia Zheng", "type": "Invited"}, {"name": "Miranda Fair", "type": "Invited"}],
-  "Power BI Tracker Training #6": [{"name": "Provider Solutions Field Account Management", "type": "Invited", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Invited", "group": true}, {"name": "GRP Customer Success Managers", "type": "Invited", "group": true}, {"name": "Laura Slayton", "type": "Invited"}, {"name": "Twana Holmes", "type": "Invited"}, {"name": "Brandon Peters", "type": "Invited"}, {"name": "Brian A Schmidt", "type": "Invited"}, {"name": "Justin Taylor", "type": "Invited"}, {"name": "Mayte Atienza", "type": "Invited"}, {"name": "Kesley Pittman", "type": "Invited"}, {"name": "Michelle Crantek", "type": "Invited"}, {"name": "Danyelle Doolittle Brausen", "type": "Invited"}, {"name": "Lydia Zheng", "type": "Invited"}],
-  "Power BI Tracker Training #7": [{"name": "Provider Solutions Field Account Management", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP Customer Success Managers", "type": "Required", "response": "No response yet", "group": true}, {"name": "Laura Slayton", "type": "Required", "response": "No response yet"}, {"name": "Twana Holmes", "type": "Required", "response": "No response yet"}, {"name": "Brandon Peters", "type": "Required", "response": "No response yet"}, {"name": "Brian A Schmidt", "type": "Required", "response": "No response yet"}, {"name": "Justin Taylor", "type": "Required", "response": "No response yet"}, {"name": "Mayte Atienza", "type": "Required", "response": "No response yet"}, {"name": "Kesley Pittman", "type": "Required", "response": "No response yet"}, {"name": "Michelle Crantek", "type": "Required", "response": "No response yet"}, {"name": "Danyelle Doolittle Brausen", "type": "Optional", "response": "No response yet"}, {"name": "Lydia Zheng", "type": "Optional", "response": "No response yet"}],
-  "Power BI Tracker Training #8": [{"name": "Provider Solutions Field Account Management", "type": "Invited", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Invited", "group": true}, {"name": "GRP Customer Success Managers", "type": "Invited", "group": true}, {"name": "Laura Slayton", "type": "Invited"}, {"name": "Twana Holmes", "type": "Invited"}, {"name": "Brandon Peters", "type": "Invited"}, {"name": "Brian A Schmidt", "type": "Invited"}, {"name": "Justin Taylor", "type": "Invited"}, {"name": "Mayte Atienza", "type": "Invited"}, {"name": "Kesley Pittman", "type": "Invited"}, {"name": "Michelle Crantek", "type": "Invited"}, {"name": "Danyelle Doolittle Brausen", "type": "Invited"}, {"name": "Lydia Zheng", "type": "Invited"}],
-  "Power BI Tracker Training #9": [{"name": "Provider Solutions Field Account Management", "type": "Invited", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Invited", "group": true}, {"name": "GRP Customer Success Managers", "type": "Invited", "group": true}, {"name": "Laura Slayton", "type": "Invited"}, {"name": "Twana Holmes", "type": "Invited"}, {"name": "Brandon Peters", "type": "Invited"}, {"name": "Brian A Schmidt", "type": "Invited"}, {"name": "Justin Taylor", "type": "Invited"}, {"name": "Mayte Atienza", "type": "Invited"}, {"name": "Kesley Pittman", "type": "Invited"}, {"name": "Michelle Crantek", "type": "Invited"}, {"name": "Danyelle Doolittle Brausen", "type": "Invited"}, {"name": "Lydia Zheng", "type": "Invited"}],
-  "Power BI Tracker Training #10": [{"name": "Provider Solutions Field Account Management", "type": "Invited", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Invited", "group": true}, {"name": "GRP Customer Success Managers", "type": "Invited", "group": true}, {"name": "Laura Slayton", "type": "Invited"}, {"name": "Twana Holmes", "type": "Invited"}, {"name": "Brandon Peters", "type": "Invited"}, {"name": "Brian A Schmidt", "type": "Invited"}, {"name": "Justin Taylor", "type": "Invited"}, {"name": "Mayte Atienza", "type": "Invited"}, {"name": "Kesley Pittman", "type": "Invited"}, {"name": "Michelle Crantek", "type": "Invited"}, {"name": "Danyelle Doolittle Brausen", "type": "Invited"}, {"name": "Lydia Zheng", "type": "Invited"}],
-  "Power BI Tracker Training #11": [{"name": "Provider Solutions Field Account Management", "type": "Invited", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Invited", "group": true}, {"name": "GRP Customer Success Managers", "type": "Invited", "group": true}, {"name": "Laura Slayton", "type": "Invited"}, {"name": "Twana Holmes", "type": "Invited"}, {"name": "Brandon Peters", "type": "Invited"}, {"name": "Brian A Schmidt", "type": "Invited"}, {"name": "Justin Taylor", "type": "Invited"}, {"name": "Mayte Atienza", "type": "Invited"}, {"name": "Kesley Pittman", "type": "Invited"}, {"name": "Michelle Crantek", "type": "Invited"}, {"name": "Danyelle Doolittle Brausen", "type": "Invited"}, {"name": "Lydia Zheng", "type": "Invited"}],
-  "Power BI Tracker Training #12": [{"name": "Provider Solutions Field Account Management", "type": "Invited", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Invited", "group": true}, {"name": "GRP Customer Success Managers", "type": "Invited", "group": true}, {"name": "Laura Slayton", "type": "Invited"}, {"name": "Twana Holmes", "type": "Invited"}, {"name": "Brandon Peters", "type": "Invited"}, {"name": "Brian A Schmidt", "type": "Invited"}, {"name": "Justin Taylor", "type": "Invited"}, {"name": "Mayte Atienza", "type": "Invited"}, {"name": "Kesley Pittman", "type": "Invited"}, {"name": "Michelle Crantek", "type": "Invited"}, {"name": "Danyelle Doolittle Brausen", "type": "Invited"}, {"name": "Lydia Zheng", "type": "Invited"}],
-  "Power BI Tracker Training #13": [{"name": "Provider Solutions Field Account Management", "type": "Invited", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Invited", "group": true}, {"name": "GRP Customer Success Managers", "type": "Invited", "group": true}, {"name": "Laura Slayton", "type": "Invited"}, {"name": "Twana Holmes", "type": "Invited"}, {"name": "Brandon Peters", "type": "Invited"}, {"name": "Brian A Schmidt", "type": "Invited"}, {"name": "Justin Taylor", "type": "Invited"}, {"name": "Mayte Atienza", "type": "Invited"}, {"name": "Kesley Pittman", "type": "Invited"}, {"name": "Michelle Crantek", "type": "Invited"}, {"name": "Danyelle Doolittle Brausen", "type": "Invited"}, {"name": "Lydia Zheng", "type": "Invited"}],
-  "Power BI Tracker Training #14": [{"name": "Provider Solutions Field Account Management", "type": "Invited", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Invited", "group": true}, {"name": "GRP Customer Success Managers", "type": "Invited", "group": true}, {"name": "Laura Slayton", "type": "Invited"}, {"name": "Twana Holmes", "type": "Invited"}, {"name": "Brandon Peters", "type": "Invited"}, {"name": "Brian A Schmidt", "type": "Invited"}, {"name": "Justin Taylor", "type": "Invited"}, {"name": "Mayte Atienza", "type": "Invited"}, {"name": "Kesley Pittman", "type": "Invited"}, {"name": "Michelle Crantek", "type": "Invited"}, {"name": "Danyelle Doolittle Brausen", "type": "Invited"}, {"name": "Lydia Zheng", "type": "Invited"}, {"name": "Miranda Fair", "type": "Invited"}],
-  "Power BI Tracker Office Hours #1": [{"name": "Provider Solutions Field Account Management", "type": "Invited", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Invited", "group": true}, {"name": "GRP Customer Success Managers", "type": "Invited", "group": true}, {"name": "Laura Slayton", "type": "Invited"}, {"name": "Twana Holmes", "type": "Invited"}, {"name": "Brandon Peters", "type": "Invited"}, {"name": "Brian A Schmidt", "type": "Invited"}, {"name": "Justin Taylor", "type": "Invited"}, {"name": "Mayte Atienza", "type": "Invited"}, {"name": "Kesley Pittman", "type": "Invited"}, {"name": "Michelle Crantek", "type": "Invited"}],
-  "Power BI Tracker Office Hours #2": [{"name": "Provider Solutions Field Account Management", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP Customer Success Managers", "type": "Required", "response": "No response yet", "group": true}, {"name": "Laura Slayton", "type": "Required", "response": "No response yet"}, {"name": "Twana Holmes", "type": "Required", "response": "No response yet"}, {"name": "Brandon Peters", "type": "Required", "response": "No response yet"}, {"name": "Brian A Schmidt", "type": "Required", "response": "No response yet"}, {"name": "Justin Taylor", "type": "Required", "response": "No response yet"}, {"name": "Mayte Atienza", "type": "Required", "response": "No response yet"}, {"name": "Kesley Pittman", "type": "Required", "response": "No response yet"}, {"name": "Michelle Crantek", "type": "Required", "response": "No response yet"}],
-  "Power BI Tracker Office Hours #3": [{"name": "Provider Solutions Field Account Management", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP Customer Success Managers", "type": "Required", "response": "No response yet", "group": true}, {"name": "Laura Slayton", "type": "Required", "response": "No response yet"}, {"name": "Twana Holmes", "type": "Required", "response": "No response yet"}, {"name": "Brandon Peters", "type": "Required", "response": "No response yet"}, {"name": "Brian A Schmidt", "type": "Required", "response": "No response yet"}, {"name": "Justin Taylor", "type": "Required", "response": "No response yet"}, {"name": "Mayte Atienza", "type": "Required", "response": "No response yet"}, {"name": "Kesley Pittman", "type": "Required", "response": "No response yet"}, {"name": "Michelle Crantek", "type": "Required", "response": "No response yet"}],
-  "Power BI Tracker Office Hours #4": [{"name": "Provider Solutions Field Account Management", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP Customer Success Managers", "type": "Required", "response": "No response yet", "group": true}, {"name": "Laura Slayton", "type": "Required", "response": "No response yet"}, {"name": "Twana Holmes", "type": "Required", "response": "No response yet"}, {"name": "Brandon Peters", "type": "Required", "response": "No response yet"}, {"name": "Brian A Schmidt", "type": "Required", "response": "No response yet"}, {"name": "Justin Taylor", "type": "Required", "response": "No response yet"}, {"name": "Mayte Atienza", "type": "Required", "response": "No response yet"}, {"name": "Kesley Pittman", "type": "Required", "response": "No response yet"}, {"name": "Michelle Crantek", "type": "Required", "response": "No response yet"}],
-  "Power BI Tracker Office Hours #5": [{"name": "Provider Solutions Field Account Management", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP Customer Success Managers", "type": "Required", "response": "No response yet", "group": true}, {"name": "Laura Slayton", "type": "Required", "response": "No response yet"}, {"name": "Twana Holmes", "type": "Required", "response": "No response yet"}, {"name": "Brandon Peters", "type": "Required", "response": "No response yet"}, {"name": "Brian A Schmidt", "type": "Required", "response": "No response yet"}, {"name": "Justin Taylor", "type": "Required", "response": "No response yet"}, {"name": "Mayte Atienza", "type": "Required", "response": "No response yet"}, {"name": "Kesley Pittman", "type": "Required", "response": "No response yet"}, {"name": "Michelle Crantek", "type": "Required", "response": "No response yet"}],
-  "Power BI Tracker Office Hours #6": [{"name": "Provider Solutions Field Account Management", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP Customer Success Managers", "type": "Required", "response": "No response yet", "group": true}, {"name": "Laura Slayton", "type": "Required", "response": "No response yet"}, {"name": "Twana Holmes", "type": "Required", "response": "No response yet"}, {"name": "Brandon Peters", "type": "Required", "response": "No response yet"}, {"name": "Brian A Schmidt", "type": "Required", "response": "No response yet"}, {"name": "Justin Taylor", "type": "Required", "response": "No response yet"}, {"name": "Mayte Atienza", "type": "Required", "response": "No response yet"}, {"name": "Kesley Pittman", "type": "Required", "response": "No response yet"}, {"name": "Michelle Crantek", "type": "Required", "response": "No response yet"}],
-  "Power BI Tracker Office Hours #7": [{"name": "Provider Solutions Field Account Management", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP Customer Success Managers", "type": "Required", "response": "No response yet", "group": true}, {"name": "Laura Slayton", "type": "Required", "response": "No response yet"}, {"name": "Twana Holmes", "type": "Required", "response": "No response yet"}, {"name": "Brandon Peters", "type": "Required", "response": "No response yet"}, {"name": "Brian A Schmidt", "type": "Required", "response": "No response yet"}, {"name": "Justin Taylor", "type": "Required", "response": "No response yet"}, {"name": "Mayte Atienza", "type": "Required", "response": "No response yet"}, {"name": "Kesley Pittman", "type": "Required", "response": "No response yet"}, {"name": "Michelle Crantek", "type": "Required", "response": "No response yet"}],
-  "Power BI Tracker Office Hours #8": [{"name": "Provider Solutions Field Account Management", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP Customer Success Managers", "type": "Required", "response": "No response yet", "group": true}, {"name": "Laura Slayton", "type": "Required", "response": "No response yet"}, {"name": "Twana Holmes", "type": "Required", "response": "No response yet"}, {"name": "Brandon Peters", "type": "Required", "response": "No response yet"}, {"name": "Brian A Schmidt", "type": "Required", "response": "No response yet"}, {"name": "Justin Taylor", "type": "Required", "response": "No response yet"}, {"name": "Mayte Atienza", "type": "Required", "response": "No response yet"}, {"name": "Kesley Pittman", "type": "Required", "response": "No response yet"}, {"name": "Michelle Crantek", "type": "Required", "response": "No response yet"}, {"name": "Danyelle Doolittle Brausen", "type": "Optional", "response": "No response yet"}, {"name": "Lydia Zheng", "type": "Optional", "response": "No response yet"}],
-  "Power BI Tracker Office Hours #9": [{"name": "Provider Solutions Field Account Management", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP Customer Success Managers", "type": "Required", "response": "No response yet", "group": true}, {"name": "Laura Slayton", "type": "Required", "response": "No response yet"}, {"name": "Twana Holmes", "type": "Required", "response": "No response yet"}, {"name": "Brandon Peters", "type": "Required", "response": "No response yet"}, {"name": "Brian A Schmidt", "type": "Required", "response": "No response yet"}, {"name": "Justin Taylor", "type": "Required", "response": "No response yet"}, {"name": "Mayte Atienza", "type": "Required", "response": "No response yet"}, {"name": "Kesley Pittman", "type": "Required", "response": "No response yet"}, {"name": "Michelle Crantek", "type": "Required", "response": "No response yet"}, {"name": "Danyelle Doolittle Brausen", "type": "Optional", "response": "No response yet"}, {"name": "Lydia Zheng", "type": "Optional", "response": "No response yet"}],
-  "Power BI Tracker Office Hours #10": [{"name": "Provider Solutions Field Account Management", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP Customer Success Managers", "type": "Required", "response": "No response yet", "group": true}, {"name": "Laura Slayton", "type": "Required", "response": "No response yet"}, {"name": "Twana Holmes", "type": "Required", "response": "No response yet"}, {"name": "Brandon Peters", "type": "Required", "response": "No response yet"}, {"name": "Brian A Schmidt", "type": "Required", "response": "No response yet"}, {"name": "Justin Taylor", "type": "Required", "response": "No response yet"}, {"name": "Mayte Atienza", "type": "Required", "response": "No response yet"}, {"name": "Kesley Pittman", "type": "Required", "response": "No response yet"}, {"name": "Michelle Crantek", "type": "Required", "response": "No response yet"}, {"name": "Danyelle Doolittle Brausen", "type": "Optional", "response": "No response yet"}, {"name": "Lydia Zheng", "type": "Optional", "response": "No response yet"}],
-  "Power BI Tracker Office Hours #11": [{"name": "Provider Solutions Field Account Management", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP Customer Success Managers", "type": "Required", "response": "No response yet", "group": true}, {"name": "Laura Slayton", "type": "Required", "response": "No response yet"}, {"name": "Twana Holmes", "type": "Required", "response": "No response yet"}, {"name": "Brandon Peters", "type": "Required", "response": "No response yet"}, {"name": "Brian A Schmidt", "type": "Required", "response": "No response yet"}, {"name": "Justin Taylor", "type": "Required", "response": "No response yet"}, {"name": "Mayte Atienza", "type": "Required", "response": "No response yet"}, {"name": "Kesley Pittman", "type": "Required", "response": "No response yet"}, {"name": "Michelle Crantek", "type": "Required", "response": "No response yet"}, {"name": "Danyelle Doolittle Brausen", "type": "Optional", "response": "No response yet"}, {"name": "Lydia Zheng", "type": "Optional", "response": "No response yet"}],
-  "Power BI Tracker Office Hours #12": [{"name": "Provider Solutions Field Account Management", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP REMOTE SALES AM ASR", "type": "Required", "response": "No response yet", "group": true}, {"name": "GRP Customer Success Managers", "type": "Required", "response": "No response yet", "group": true}, {"name": "Laura Slayton", "type": "Required", "response": "No response yet"}, {"name": "Twana Holmes", "type": "Required", "response": "No response yet"}, {"name": "Brandon Peters", "type": "Required", "response": "No response yet"}, {"name": "Brian A Schmidt", "type": "Required", "response": "No response yet"}, {"name": "Justin Taylor", "type": "Required", "response": "No response yet"}, {"name": "Mayte Atienza", "type": "Required", "response": "No response yet"}, {"name": "Kesley Pittman", "type": "Required", "response": "No response yet"}, {"name": "Michelle Crantek", "type": "Required", "response": "No response yet"}, {"name": "Danyelle Doolittle Brausen", "type": "Optional", "response": "No response yet"}, {"name": "Lydia Zheng", "type": "Optional", "response": "No response yet"}]
-};
 
 /* CALENDAR SYNC (for the agent)
    Search Outlook for events from Oct 5, 2026 to Jan 15, 2027 whose titles exactly match the titles above and
    in the communications list. Replace "events" with one entry per matching event:
-   { subject, start, end, organizer, link, invited }  (start and end are ISO strings with the local offset;
-   link is the Teams join URL or ""; invited is the number of attendees besides the organizer, or leave it out when there are none). Also list each meeting's invited people in ATTENDEES (name, type Required or Optional, response). Set syncedAt to today's date (YYYY-MM-DD). Change nothing else. */
+   { subject, start, end, organizer, link }  (start and end are ISO strings with the local offset;
+   link is the Teams join URL or ""). Set syncedAt to today's date (YYYY-MM-DD). Change nothing else. */
 const CALENDAR = {
-  syncedAt: "2026-10-21",
+  syncedAt: null,
   events: [
-    {"subject": "Power BI Tracker Training #1", "start": "2026-10-26T14:00:00-05:00", "end": "2026-10-26T15:00:00-05:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_ZDRlMDQxYzUtMWJhMi00ZmJkLWJkMjItOTg1ZmJmOGJiNTNh%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 22},
-    {"subject": "Power BI Tracker Training #2", "start": "2026-10-29T12:00:00-05:00", "end": "2026-10-29T13:00:00-05:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_OWY0ZWExMGQtOGM2Mi00NzY3LTk4YWMtYmNiODIxY2ViODU1%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 14},
-    {"subject": "Power BI Tracker Training #3", "start": "2026-11-02T12:00:00-06:00", "end": "2026-11-02T13:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_NmY1NDAwNjEtN2U3MS00OTM4LWEyZTItYWJmODYxZGYzNWY3%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 14},
-    {"subject": "Power BI Tracker Training #4", "start": "2026-11-06T11:45:00-06:00", "end": "2026-11-06T12:45:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_MjAzOWI2NDktOTYyYy00ZTEzLTlhODMtMWU4OTY2NDZmZjg4%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 14},
-    {"subject": "Power BI Tracker Training #5", "start": "2026-11-09T12:00:00-06:00", "end": "2026-11-09T13:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_N2FiNTQ4ZDYtZTNkMi00YTYwLWIxYzQtODMzZTViZjUxZWEz%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 14},
-    {"subject": "Power BI Tracker Training #6", "start": "2026-11-12T12:00:00-06:00", "end": "2026-11-12T13:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_NTk3NTMwY2ItMjVhYS00Yzc5LTljMDYtNGU1OTIzMGY1MTll%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 13},
-    {"subject": "Power BI Tracker Training #7", "start": "2026-11-16T12:00:00-06:00", "end": "2026-11-16T13:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_MWQ0Y2I3ODMtZDU5MS00ZDU3LWJiMzMtZTJhYTkwNzI4Njdm%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 13},
-    {"subject": "Power BI Tracker Training #8", "start": "2026-11-19T12:00:00-06:00", "end": "2026-11-19T13:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_NWY3OTBjMDQtMGI3NC00Yzk0LTkyNTAtYmMwYTk3ZjQwYjc5%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 13},
-    {"subject": "Power BI Tracker Training #9", "start": "2026-11-23T12:00:00-06:00", "end": "2026-11-23T13:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_NGQ5YWUwNGItYjRhOC00NzRjLWEzY2UtMjY2YWRhNGJlOThk%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 13},
-    {"subject": "Power BI Tracker Training #10", "start": "2026-11-30T12:00:00-06:00", "end": "2026-11-30T13:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_YTMxZjMyZGEtMzA1Ny00ZGYwLThmYTItNmI0ZWJlODk1MWQ3%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 13},
-    {"subject": "Power BI Tracker Training #11", "start": "2026-12-08T12:00:00-06:00", "end": "2026-12-08T13:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_ZmJmM2RhOWMtMmY5Ni00ZDY2LWE5YjgtOGUwZWFkZWFjMWZl%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 13},
-    {"subject": "Power BI Tracker Training #12", "start": "2026-12-15T12:00:00-06:00", "end": "2026-12-15T13:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_MDU3MTI0NmMtYmVkOS00NTliLWEyMzQtMzJiMTI5Y2E3NjJh%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 13},
-    {"subject": "Power BI Tracker Training #13", "start": "2026-12-22T12:00:00-06:00", "end": "2026-12-22T13:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_NWZiMDU5MDEtMmRhYy00NGM0LWE4NTMtZjM1OWEzYTdiZTAy%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 13},
-    {"subject": "Power BI Tracker Training #14", "start": "2026-12-29T12:00:00-06:00", "end": "2026-12-29T13:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_ZTczMTE0MDEtMWEwYS00ZDNmLTgyNzItN2U2YTM3NTExNjZi%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 14},
-    {"subject": "Power BI Tracker Office Hours #1", "start": "2026-11-02T14:30:00-06:00", "end": "2026-11-02T15:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_NzBmOTFlNGYtYmZiMS00YWRkLWE3MWYtYmU2Njk3ZDI0MTQ5%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 11},
-    {"subject": "Power BI Tracker Office Hours #2", "start": "2026-11-06T14:30:00-06:00", "end": "2026-11-06T15:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_NTE2ZWNiYTUtYTJmNC00MzRjLWJiYTEtYTEzMDZmYzZhNTEz%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 11},
-    {"subject": "Power BI Tracker Office Hours #3", "start": "2026-11-09T14:30:00-06:00", "end": "2026-11-09T15:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_Y2RlYzY0ZjYtMmFlZS00NWRlLTgxMGUtYjA3OWI0NzUwM2Jm%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 11},
-    {"subject": "Power BI Tracker Office Hours #4", "start": "2026-11-11T14:30:00-06:00", "end": "2026-11-11T15:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_NmJhNDkxZWItNTAzMi00MDQxLWI0ZjAtYWJkZmJjMjZlZDky%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 11},
-    {"subject": "Power BI Tracker Office Hours #5", "start": "2026-11-16T14:30:00-06:00", "end": "2026-11-16T15:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_MjcyY2FlZTMtNDg1MC00YzE5LWIxYjEtNzYwNDdkODhmZGFj%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 11},
-    {"subject": "Power BI Tracker Office Hours #6", "start": "2026-11-18T14:30:00-06:00", "end": "2026-11-18T15:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_ZmM2ODMzMzQtNDUwMC00NmZlLWFkOTQtZjViYWJiZGM2YTc4%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 11},
-    {"subject": "Power BI Tracker Office Hours #7", "start": "2026-11-23T14:30:00-06:00", "end": "2026-11-23T15:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_OTAxNjI2MTMtNTIxNi00ZmIyLWE1MjMtNDk2NDcxMTg3NWM1%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 11},
-    {"subject": "Power BI Tracker Office Hours #8", "start": "2026-11-25T14:30:00-06:00", "end": "2026-11-25T15:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_YjgyZjhiNzItYzNkOC00ZmI4LThlODAtMGIwYzE4MTJhODNl%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 13},
-    {"subject": "Power BI Tracker Office Hours #9", "start": "2026-11-30T14:30:00-06:00", "end": "2026-11-30T15:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_NDZjNjk3N2MtZmRlZi00MDM3LThlMmMtYmRkNThlMTAxMWE0%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 13},
-    {"subject": "Power BI Tracker Office Hours #10", "start": "2026-12-02T14:30:00-06:00", "end": "2026-12-02T15:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_MDVmY2ZlMjctNGEyZC00NjM2LWE5NGYtYTI1NmFiNGNjMGM0%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 13},
-    {"subject": "Power BI Tracker Office Hours #11", "start": "2026-12-07T14:30:00-06:00", "end": "2026-12-07T15:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_ZDllYWY1NGMtMjljNS00ZjViLWJkMzQtZDEwMTYwMWNkN2Iw%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 13},
-    {"subject": "Power BI Tracker Office Hours #12", "start": "2026-12-09T14:30:00-06:00", "end": "2026-12-09T15:00:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_YWI0MjdmMWEtMGE4OC00OGU0LTljY2YtZmQwNTgxMzc1MzYx%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 13},
-    {"subject": "Power BI Tracker | Sales Training Rollout Plan Review & Kickoff", "start": "2026-10-21T10:00:00-05:00", "end": "2026-10-21T10:30:00-05:00", "organizer": "Nancy Selvanathan", "link": ""},
-    {"subject": "Power BI Tracker: Review Open items & Sales Rollout Plan", "start": "2026-10-19T13:00:00-05:00", "end": "2026-10-19T13:30:00-05:00", "organizer": "Nancy Selvanathan", "link": "Microsoft Teams meeting"},
-    {"subject": "Power BI Tracker Comms: Rollout and Communications Approval", "start": "2026-10-19", "organizer": "Nancy Selvanathan"},
-    {"subject": "Final Design and PDF Signoff", "start": "2026-10-26", "organizer": "Nancy Selvanathan"},
-    {"subject": "Training Collateral Ready", "start": "2026-10-26", "organizer": "Nancy Selvanathan"},
-    {"subject": "Power BI Tracker Comms: Training Program Launch", "start": "2026-10-26", "organizer": "Nancy Selvanathan"},
-    {"subject": "QC Tracker Release", "start": "2026-11-02", "organizer": "Nancy Selvanathan"},
-    {"subject": "BDD QC Completion", "start": "2026-11-11", "organizer": "Nancy Selvanathan"},
-    {"subject": "Sales Attestation Window", "start": "2026-11-11", "end": "2026-11-20", "organizer": "Nancy Selvanathan"},
-    {"subject": "New-Hire Training Incorporated", "start": "2026-11-16", "organizer": "Nancy Selvanathan"},
-    {"subject": "Optimization QC Completion", "start": "2026-11-20", "organizer": "Nancy Selvanathan"},
-    {"subject": "Power BI Tracker Comms: Business and Sales Readiness Update", "start": "2026-11-20", "organizer": "Nancy Selvanathan"},
-    {"subject": "Power BI Tracker Comms: Executive Readiness Summary", "start": "2026-11-23", "organizer": "Nancy Selvanathan"},
-    {"subject": "Power BI Tracker Comms: Go-Live Communication", "start": "2026-12-01", "organizer": "Nancy Selvanathan"},
-    {"subject": "Feedback, PDF Testing and Hypercare Plan", "start": "2026-12-03", "organizer": "Nancy Selvanathan"},
-    {"subject": "Power BI Tracker Go-Live", "start": "2026-12-04", "organizer": "Nancy Selvanathan"},
-    {"subject": "Power BI Tracker Comms: Post-Launch Adoption Update", "start": "2026-12-07", "organizer": "Nancy Selvanathan"},
-    {"subject": "Power BI Tracker Comms: Adoption and Stabilization Summary", "start": "2027-01-08", "organizer": "Nancy Selvanathan"},
-    {"subject": "Power BI Tracker Comms: Rollout and Communications Approval", "start": "2026-10-19T13:00:00-05:00", "end": "2026-10-19T13:30:00-05:00", "organizer": "Nancy Selvanathan", "link": ""},
-    {"subject": "Rollout and Communications Approval", "start": "2026-10-19T13:00:00-05:00", "end": "2026-10-19T13:30:00-05:00", "organizer": "Nancy Selvanathan", "link": ""},
-    {"subject": "Delivery Readiness", "start": "2026-10-26T13:00:00-05:00", "end": "2026-10-26T13:30:00-05:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_NWQ4MGU5Y2EtZGIxNi00YTQxLTg4ZDUtNDY3Mjc3NTFiODli%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 1},
-    {"subject": "Tracker Readiness", "start": "2026-11-13T13:00:00-06:00", "end": "2026-11-13T13:30:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_YzM3YmNiOWQtYWVmYS00MzA5LTkyMTItN2YyOTNmMmIwMGI4%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 2},
-    {"subject": "Tracker Rollout: Sales Readiness 1", "start": "2026-11-09T15:00:00-06:00", "end": "2026-11-09T15:30:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_Njg2NjcwODUtZjAxYS00MzhiLTg3ZTUtNTUxYzMzNGQ2M2I1%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 11},
-    {"subject": "Tracker Rollout: Sales Readiness 2", "start": "2026-11-20T13:00:00-06:00", "end": "2026-11-20T13:30:00-06:00", "organizer": "Nancy Selvanathan", "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_NTViZjk3YzAtMTk0Yi00YzYyLTg2ZDktMzA5OGExZWQ4YTZm%40thread.v2/0?context=%7b%22Tid%22%3a%22da67ef1b-ca59-4db2-9a8c-aa8d94617a16%22%2c%22Oid%22%3a%229bab2f75-273b-4458-900b-7e0fe4409386%22%7d", "invited": 11},
-    {"subject": "Executive Readiness Review", "start": "2026-11-30T13:00:00-06:00", "end": "2026-11-30T13:30:00-06:00", "organizer": "Nancy Selvanathan", "link": ""},
-    {"subject": "Power BI Tracker Go-Live Communication", "start": "2026-12-01T13:00:00-06:00", "end": "2026-12-01T13:30:00-06:00", "organizer": "Nancy Selvanathan", "link": ""},
-    {"subject": "Adoption and Stabilization Review", "start": "2027-01-08T13:00:00-06:00", "end": "2027-01-08T13:30:00-06:00", "organizer": "Nancy Selvanathan", "link": ""}
+    { subject: "Power BI Tracker Office Hours", start: "2026-10-27T14:30:00-05:00", end: "2026-10-27T15:00:00-05:00" },
+    { subject: "Power BI Tracker Office Hours", start: "2026-10-29T14:30:00-05:00", end: "2026-10-29T15:00:00-05:00" },
+    { subject: "Power BI Tracker Office Hours", start: "2026-11-05T14:30:00-06:00", end: "2026-11-05T15:00:00-06:00" },
+    { subject: "Power BI Tracker Office Hours", start: "2026-11-10T14:30:00-06:00", end: "2026-11-10T15:00:00-06:00" },
+    { subject: "Power BI Tracker Office Hours", start: "2026-11-12T14:30:00-06:00", end: "2026-11-12T15:00:00-06:00" },
+    { subject: "Power BI Tracker Office Hours", start: "2026-11-17T14:30:00-06:00", end: "2026-11-17T15:00:00-06:00" },
+    { subject: "Power BI Tracker Office Hours", start: "2026-11-19T14:30:00-06:00", end: "2026-11-19T15:00:00-06:00" },
+    { subject: "Power BI Tracker Office Hours", start: "2026-11-24T14:30:00-06:00", end: "2026-11-24T15:00:00-06:00" }
   ]
 };
 
@@ -1927,15 +623,12 @@ const OPEN_ITEMS = [
     owner: "Nancy Selvanathan / Mayte Atienza", due: "Before the first session on Oct 26", done: false },
   { id: "o2", q: "Confirm the required participant list for sales attestation", owner: "Twana Holmes / Laura Slayton", due: "Before the window opens Nov 11", done: false },
   { id: "o3", q: "Confirm the new-hire audience size", owner: "Twana Holmes / Laura Slayton", due: "Due Nov 16", done: false },
-  { id: "o4", q: "Start reporting actual attendance, recording views and office-hours participation", owner: "Nancy Selvanathan", due: "From the first session on Oct 26", done: false },
-  { id: "o5", q: "Run sales attestation as a joint effort between Sales Enablement and Optimization", owner: "Twana Holmes / Laura Slayton", due: "Before the window opens Nov 11", done: false },
-  { id: "o6", q: "Provide Best Practice Walkthrough recordings on Highspot for Unity, Oncology and MSPL", owner: "To be assigned", due: "Date to be set", done: false },
-  { id: "o7", q: "Include feedback from Unity in the FAQ document", owner: "To be assigned", due: "Date to be set", done: false }
+  { id: "o4", q: "Start reporting actual attendance, recording views and office-hours participation", owner: "Nancy Selvanathan", due: "From the first session on Oct 26", done: false }
 ];
 
 const RISKS = [
   { risk: "Training attendance or coverage gaps", impact: "Users may reach go-live without adequate preparation", mitigation: "Offer repeated full-feature sessions and office hours; use GPO Optimization and sales leadership to reinforce participation", owner: "Nancy / Brandon / Brian Schmidt / Justin", level: "Medium", status: "Open" },
-  { risk: "Sales attestation not completed by November 30", impact: "Business and sales readiness may not be fully evidenced", mitigation: "Track completion during the November 11-30 window and escalate outstanding responses", owner: "Twana Holmes / Laura Slayton", level: "Medium", status: "Open" },
+  { risk: "Sales attestation not completed by November 20", impact: "Business and sales readiness may not be fully evidenced", mitigation: "Track completion during the November 11-20 window and escalate outstanding responses", owner: "Twana Holmes / Laura Slayton", level: "Medium", status: "Open" },
   { risk: "Late feedback before final incorporation on December 3", impact: "Limited time to incorporate validated changes before go-live", mitigation: "Capture feedback during training and office hours; prioritize launch-critical items", owner: "Mayte Atienza", level: "Medium", status: "Open" },
   { risk: "PDF automation testing issues", impact: "PDF generation may not be stable by go-live", mitigation: "Complete PDF automation testing by December 3 and use the hypercare plan for escalations", owner: "Thit Lwin Oo", level: "Medium", status: "Open" },
   { risk: "Post-go-live support demand remains elevated", impact: "User adoption and stabilization may take longer than planned", mitigation: "Continue weekly training and office hours for four weeks and review unresolved issues at stabilization", owner: "Nancy / Mayte / Thit", level: "Medium", status: "Open" }
@@ -1945,7 +638,7 @@ const COMMS = [
   { date: "Oct 19, 2026", name: "Rollout and communications approval", iso: "2026-10-19", title: "Power BI Tracker Comms: Rollout and Communications Approval", audience: "Rollout stakeholders", owner: "Nancy Selvanathan", status: "Scheduled" },
   { date: "Oct 26, 2026", name: "Training program launch", iso: "2026-10-26", title: "Power BI Tracker Comms: Training Program Launch", audience: "All impacted Tracker users", owner: "Nancy Selvanathan / Mayte Atienza", status: "Scheduled" },
   { date: "Nov 20, 2026", name: "Business and sales readiness update", iso: "2026-11-20", title: "Power BI Tracker Comms: Business and Sales Readiness Update", audience: "GPO Optimization and Sales Leadership", owner: "Nancy / Brandon / Brian Schmidt / Justin", status: "Scheduled" },
-  { date: "Nov 30, 2026", name: "Executive readiness summary", iso: "2026-11-30", title: "Power BI Tracker Comms: Executive Readiness Summary", audience: "Executive Sponsors and Sales Leadership", owner: "Nancy / Brandon / Brian Schmidt / Justin", status: "Scheduled" },
+  { date: "Nov 23, 2026", name: "Executive readiness summary", iso: "2026-11-23", title: "Power BI Tracker Comms: Executive Readiness Summary", audience: "Executive Sponsors and Sales Leadership", owner: "Nancy / Brandon / Brian Schmidt / Justin", status: "Scheduled" },
   { date: "Dec 1, 2026", name: "Go-live communication", iso: "2026-12-01", title: "Power BI Tracker Comms: Go-Live Communication", audience: "All impacted Tracker users", owner: "Nancy Selvanathan", status: "Scheduled" },
   { date: "Week of Dec 7, 2026", name: "Post-launch adoption update", iso: "2026-12-07", title: "Power BI Tracker Comms: Post-Launch Adoption Update", weekOf: true, audience: "Rollout stakeholders", owner: "Nancy Selvanathan", status: "Planned" },
   { date: "Jan 8, 2027", name: "Adoption and stabilization summary", iso: "2027-01-08", title: "Power BI Tracker Comms: Adoption and Stabilization Summary", audience: "Executive Sponsors and rollout stakeholders", owner: "Nancy Selvanathan / Thit Lwin Oo", status: "Planned" }
@@ -1955,8 +648,8 @@ const OWNERS = [
   { title: "Executive sponsors", names: "Danyelle Brausen, Lydia Zheng", what: "Strategic oversight, readiness visibility, leadership alignment" },
   { title: "Rollout leadership", names: "Brandon Peters, Brian Schmidt, Justin Taylor, Nancy Selvanathan", what: "Business, sales, executive and adoption readiness" },
   { title: "Delivery and enablement", names: "Nancy Selvanathan, Mayte Atienza", what: "Design approval, delivery readiness, training program, launch preparation" },
-  { title: "Sales attestation and new-hire training", names: "Twana Holmes, Laura Slayton", what: "Sales Attestation Window (Nov 11 to 30), run jointly by Sales Enablement and Optimization, and New-Hire Training Incorporated (due Nov 16)" },
-  { title: "Support and hypercare", names: "Thit Lwin Oo, Mayte Atienza", what: "PDF automation, hypercare plan, support escalation, stabilization" },
+  { title: "Sales attestation and new-hire training", names: "Twana Holmes, Laura Slayton", what: "Sales Attestation Window (Nov 11 to 20) and New-Hire Training Incorporated (due Nov 16)" },
+  { title: "Support and hypercare", names: "Thit Lwin Oo", what: "PDF automation, hypercare plan, support escalation, stabilization" },
   { title: "Sales leadership", names: "Lisa, Nick Rutledge, Brian Ballinger", what: "Adoption reinforcement, training promotion, field escalation" }
 ];
 /* ================================================================== */
@@ -1968,7 +661,7 @@ const fmtLong = n => new Date(n * DAY).toLocaleDateString("en-US", { weekday: "l
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const plural = (n, w) => n + " " + w + (n === 1 ? "" : "s");
-const STATUSES = ["On Track", "Planned", "Scheduled", "Draft: On Calendar", "At Risk", "Off Track", "Complete"];
+const STATUSES = ["On Track", "Planned", "Scheduled", "At Risk", "Off Track", "Complete"];
 const cls = st => ({ "On Track": "on", "Complete": "on", "At Risk": "risk", "Off Track": "off" }[st] || "idle");
 
 const today = toDay(TODAY), planned = toDay(GO_LIVE);
@@ -2033,14 +726,14 @@ function renderVerdict() {
         (nextGate.s - today <= 0 ? "under way" : "in " + plural(nextGate.s - today, "day")) + ". Owner: " + nextGate.owners.join(", ") + "."), "gate:" + nextGate.id)
     : card("next kc-next", "Next gate", "All gates reached", "Nothing left on the gate schedule.");
   el.innerHTML =
-    card("status", "Go-live", esc(fmt(goLive())) + " " + pill, flagged.length ? plural(flagged.length, "item") + " flagged below" : "No gate or milestone is behind schedule") +
+    card("status", "Go-live", esc(fmt(goLive())) + " " + pill, flagged.length ? plural(flagged.length, "item") + " would not fit before go-live" : "No gate or milestone is behind schedule") +
     card("kc-days", live ? "Days since go-live" : days === 0 ? "Go-live" : "Days to go-live", days === 0 ? "Today" : String(Math.abs(days)), esc(fmtLong(goLive()) + ", " + GO_LIVE_TIME)) +
     card("ready kc-ready", "Readiness gates on track", counts.on + " of " + total, mixBar) +
     card("kc-risk", "Open risks", String(openRisks), openRisks ? esc(riskBreakdown()) : "None open", "risks") +
     card("kc-open", "Items to close before launch", String(openItems), "Review open items", "open") +
     nextHtml +
-    (flagged.length ? '<div class="flagbar s-' + (v === "off" ? "off" : "risk") + '"><b>Flagged:</b> ' +
-      flagged.map(i => esc(i.title) + " (" + esc(effective(i).why || "marked " + i.status) + ")").join("; ") + "</div>" : "");
+    (flagged.length ? '<div class="flagbar s-' + (v === "off" ? "off" : "risk") + '"><b>Flagged by schedule:</b> ' +
+      flagged.map(i => esc(i.title) + " (" + esc(effective(i).why) + ")").join("; ") + "</div>" : "");
   $("#strip").className = "strip s-" + (v === "on" ? "on" : v);
   $("#strip").innerHTML = '<i class="dot"></i>' + (live ? "Live since " + fmt(goLive()) : "Go-live " + fmt(goLive()) + " is " + word + ", " + daysPhrase());
   $("#openCount").textContent = openItems;
@@ -2066,7 +759,7 @@ function renderTimeline() {
       const e = effective(it), sel = (it.id === state.sel ? " sel" : "") + (it.e < state.walk ? " past" : "");
       labels += '<button class="rowlab s-' + e.st + sel + '" data-id="' + it.id + '"><b>' + esc(it.title) + '</b></button>';
       const range = it.e > it.s;
-      const a11y = esc(it.title) + ", " + esc(itemLabel(it)) + ", " + fmt(it.s) + (range ? " to " + fmt(it.e) : "") + (it.e < state.walk ? ", scheduled date has passed" : "");
+      const a11y = esc(it.title) + ", " + esc(it.status) + ", " + fmt(it.s) + (range ? " to " + fmt(it.e) : "") + (it.e < state.walk ? ", scheduled date has passed" : "");
       const endPos = pos(range ? it.e + 1 : it.s), left = endPos > 78;
       const text = (it.launch ? "Go-live " : "") + fmt(it.s) + (range ? " to " + fmt(it.e) : "");
       const lab = left ? '<span class="dlab" style="right:' + (100 - pos(it.s) + 1.2) + '%">' + text + "</span>" : '<span class="dlab" style="left:' + (endPos + 1.2) + '%">' + text + "</span>";
@@ -2076,18 +769,6 @@ function renderTimeline() {
       tracks += '<div class="rowtrack">' + grid + shape + lab + "</div>";
     });
   });
-  if (["gates", "training", "all"].includes(state.filter)) {
-    labels += '<div class="lanehead">Training and office hours</div>'; tracks += '<div class="rowtrack lane"></div>';
-    seriesRows().forEach(sr => {
-      const doneN = sr.rows.filter(rowDone).length, sel = (sr.id === state.sel || sr.rows.some(r => state.sel === "sess:" + encodeURIComponent(r.title))) ? " sel" : "";
-      labels += '<button class="rowlab s-idle' + sel + '" data-id="' + sr.id + '"><b>' + esc(sr.title) + " (" + doneN + " of " + sr.rows.length + " complete)</b></button>";
-      const ticks = sr.rows.map(r => {
-        const day = r.ev ? r.ev.day : r.s, cls = rowDone(r) ? "on" : r.status === "missing" ? "idle dim" : rowSent(r) ? "sent" : "idle";
-        return '<button class="tick s-' + cls + (state.sel === "sess:" + encodeURIComponent(r.title) ? " sel" : "") + '" data-id="sess:' + encodeURIComponent(r.title) + '" style="left:' + pos(day) + '%" title="' + esc(shortTitle(r.title) + ", " + fmtDay(day) + ". " + rowLabel(r)) + '" aria-label="' + esc(shortTitle(r.title) + ", " + fmtDay(day) + ", " + rowLabel(r)) + '"></button>';
-      }).join("");
-      tracks += '<div class="rowtrack">' + grid + '<i class="serline" style="left:' + pos(sr.first) + "%;width:" + (pos(sr.last) - pos(sr.first)) + '%"></i>' + ticks + "</div>";
-    });
-  }
   tracks = '<div class="plot">' + tracks +
     '<div class="vline today" style="left:' + pos(state.walk) + '%"></div><span class="vtag" style="left:' + pos(state.walk) + '%">' + (state.walk === today ? "Today" : fmt(state.walk)) + '</span>' +
     '<div class="vline golive" style="left:' + pos(goLive()) + '%"></div></div>';
@@ -2095,61 +776,21 @@ function renderTimeline() {
 }
 
 const ul = (arr, cls2) => arr && arr.length ? '<ul class="' + (cls2 || "") + '">' + arr.map(x => "<li>" + esc(x) + "</li>").join("") + "</ul>" : "";
-function renderSessionDetail(panel, title) {
-  const rows = matchCalendar().rows, r = rows.find(x => x.title === title);
-  if (!r) { panel.innerHTML = '<div class="hint">Select a session on the timeline.</div>'; return; }
-  const sr = seriesRows().find(x => x.rows.some(y => y.title === title));
-  const idx = sr.rows.findIndex(y => y.title === title) + 1;
-  const done = rowDone(r), note = rowNote(r), e = r.ev;
-  const cls = done ? "on" : r.status === "missing" ? "idle" : (r.status === "diff" || rowPast(r)) ? "risk" : rowSent(r) ? "sent" : "idle";
-  const when = e ? fmtDay(e.day) + (fmtClock(e.start) ? ", " + fmtClock(e.start) : "") + (fmtMins(e.start, e.end) ? " (" + fmtMins(e.start, e.end) + ")" : "") : "Not on the calendar yet";
-  panel.innerHTML = '<div class="detail"><h3>' + esc(shortTitle(r.title)) + '</h3><span class="pill s-' + cls + '">' + esc(rowLabel(r)) + "</span>" +
-    (note ? '<p class="flag s-risk">' + esc(note) + "</p>" : "") +
-    "<h4>Planned</h4><div>" + esc(plannedLabel(r)) + "</div>" +
-    "<h4>On the calendar</h4><div>" + esc(when) + "</div>" +
-    (e && e.organizer ? "<h4>Organizer</h4><div>" + esc(e.organizer) + "</div>" : "") +
-    (e && "link" in e ? "<h4>Teams link</h4><div>" + (isUrl(e.link) ? '<a href="' + esc(e.link) + '" target="_blank" rel="noopener noreferrer">Join Teams meeting</a>' : e.link ? "Added" : "Not added yet") + "</div>" : "") +
-    (e && e.invited ? "<h4>Invited</h4><div>" + whoBtn(e).replace(esc(e.invited + " invited"), esc(e.invited + " people. See who")) + "</div>" : "") +
-    "<h4>Part of</h4><div>" + esc(sr.title) + ", session " + idx + " of " + sr.rows.length + "</div>" +
-    (state.edit ? '<p><button class="btn small" data-mc="' + encodeURIComponent(r.title) + '">' + (done ? "Undo complete" : "Mark complete") + "</button></p>" : "") +
-    '<p><button class="btn small" data-id="' + sr.id + '">See all ' + esc(sr.title.toLowerCase()) + "</button></p></div>";
-}
-function renderSeriesDetail(panel) {
-  const sr = seriesRows().find(x => x.id === state.sel);
-  if (!sr) { panel.innerHTML = '<div class="hint">Select a row on the timeline.</div>'; return; }
-  const doneN = sr.rows.filter(rowDone).length, next = sr.rows.find(r => !rowDone(r));
-  const dayOf = r => r.ev ? r.ev.day : r.s;
-  const list = sr.rows.map(r => {
-    const t = r.ev ? [fmtClock(r.ev.start), fmtMins(r.ev.start, r.ev.end)].filter(Boolean).join(", ") : "";
-    return "<li>" + esc(shortTitle(r.title) + ": " + fmtDay(dayOf(r)) + (t ? ", " + t : "")) + ". <b>" + esc(rowLabel(r)) + "</b>" +
-      (state.edit ? ' <button class="btn small" data-mc="' + encodeURIComponent(r.title) + '">' + (rowDone(r) ? "Undo complete" : "Mark complete") + "</button>" : "") + "</li>";
-  }).join("");
-  panel.innerHTML = '<div class="detail"><h3>' + esc(sr.title) + '</h3><span class="pill s-' + (doneN === sr.rows.length ? "on" : "idle") + '">' + doneN + " of " + sr.rows.length + " complete</span>" +
-    "<h4>Timeline</h4><div>" + fmt(sr.first) + " to " + fmt(sr.last) + (next ? ". Next: " + esc(shortTitle(next.title) + ", " + fmtDay(dayOf(next))) : ". All sessions are complete") + ".</div>" +
-    '<h4>Sessions</h4><ul class="sessions">' + list + "</ul></div>";
-}
 function renderDetail() {
   const it = ITEMS.find(x => x.id === state.sel);
   const panel = $("#detailPanel");
-  if (String(state.sel).indexOf("series-") === 0) { renderSeriesDetail(panel); return; }
-  if (String(state.sel).indexOf("sess:") === 0) { renderSessionDetail(panel, decodeURIComponent(String(state.sel).slice(5))); return; }
   if (!it) { panel.innerHTML = '<div class="hint">Select a gate or milestone.</div>'; return; }
   const e = effective(it);
   const flag = e.why ? '<p class="flag s-' + e.st + '"><b>Flagged by schedule.</b> ' + esc(e.why) + "</p>" : "";
   const crow = TITLES[it.id] ? matchCalendar().rows.find(r => r.id === it.id) : null;
   const calHtml = crow ? "<h4>Calendar</h4><div>Title to use: <b>" + esc(crow.title) + '</b></div><div class="meta">' + esc(statusText(crow)) + (crow.ev ? " (" + fmtDay(crow.ev.day) + ")" : "") + "</div>" : "";
-  // Sales Readiness meetings show their Teams link and invited list, the same way a training session does.
-  const cev = crow && crow.ev && SALES_MEETING_IDS.includes(it.id) ? crow.ev : null;
-  const meetHtml = cev ? ("link" in cev ? "<h4>Teams link</h4><div>" + (isUrl(cev.link) ? '<a href="' + esc(cev.link) + '" target="_blank" rel="noopener noreferrer">Join Teams meeting</a>' : cev.link ? "Added" : "Not added yet") + "</div>" : "") +
-    (cev.invited ? "<h4>Invited</h4><div>" + whoBtn(cev).replace(esc(cev.invited + " invited"), esc(cev.invited + " people. See who")) + "</div>" : "") : "";
-  const emailHtml = it.email ? "<h4>Delivery</h4><div>Email, sent " + fmt(it.s) + "</div>" : "";
   const confirmed = it.done.filter(Boolean).length;
   const when = fmtLong(it.s) + (it.e > it.s ? " to " + fmtLong(it.e) : "");
   let crit;
   if (state.edit) crit = '<ul class="checks">' + it.criteria.map((c, i) => '<li><input type="checkbox" id="c' + i + '" data-c="' + i + '"' + (it.done[i] ? " checked" : "") + '><label for="c' + i + '">' + esc(c) + "</label></li>").join("") + "</ul>";
   else crit = '<ul class="checks">' + it.criteria.map((c, i) => "<li><span aria-hidden=\"true\">" + (it.done[i] ? "&#9745;" : "&#9744;") + "</span><span>" + esc(c) + "</span></li>").join("") + "</ul>";
-  let html = '<div class="detail"><h3>' + esc(it.title) + '</h3><span class="pill s-' + (itemLabel(it) === "Invite Sent" ? "sent" : e.st) + '">' + esc(itemLabel(it)) + "</span>" + flag +
-    "<h4>When</h4><div>" + when + "</div><h4>Owners</h4><div>" + esc(it.owners.join(", ")) + "</div>" + emailHtml + calHtml + meetHtml +
+  let html = '<div class="detail"><h3>' + esc(it.title) + '</h3><span class="pill s-' + e.st + '">' + esc(it.status) + "</span>" + flag +
+    "<h4>When</h4><div>" + when + "</div><h4>Owners</h4><div>" + esc(it.owners.join(", ")) + "</div>" + calHtml +
     "<h4>Criteria (" + confirmed + " of " + it.criteria.length + " confirmed)</h4>" + crit;
   if (it.supports) html += "<h4>Supports</h4><div>" + esc(it.supports) + "</div>";
   const tr = [].concat(it.training || [], it.office || []);
@@ -2184,22 +825,12 @@ function fmtClock(iso) { if (!iso || iso.length < 16) return ""; let h = +iso.sl
 function fmtMins(a, b) { if (!a || !b || a.length < 16 || b.length < 16) return ""; const m = Math.round((new Date(b) - new Date(a)) / 60000); return isFinite(m) && m > 0 ? m + " min" : ""; }
 const plannedLabel = r => r.weekOf ? "Week of " + fmt(r.s) : r.e > r.s ? fmt(r.s) + " to " + fmt(r.e) : fmtDay(r.s);
 
-function seriesRows() {
-  const rows = matchCalendar().rows;
-  const mk = (id, title, type) => {
-    const r = rows.filter(x => x.type === type).sort((a, b) => a.s - b.s || a.title.localeCompare(b.title));
-    const days = r.map(x => x.ev ? x.ev.day : x.s);
-    return { id, title, rows: r, first: Math.min(...days), last: Math.max(...days) };
-  };
-  return [mk("series-training", "Training sessions", "Training"), mk("series-oh", "Office hours", "Office hours")];
-}
-const shortTitle = t => t.replace("Power BI Tracker ", "");
 function expectedMeetings() {
   const rows = [];
   ITEMS.forEach(it => {
     const t = TITLES[it.id]; if (!t) return;
     const type = it.id === "sales-attestation" ? "Assessment" : it.lane === "gates" ? "Gate" : "Milestone";
-    rows.push({ id: it.id, title: t, type, s: toDay(it.date), e: toDay(it.end || it.date), weekOf: false, alts: TITLE_ALIASES[it.id] || [] });
+    rows.push({ id: it.id, title: t, type, s: toDay(it.date), e: toDay(it.end || it.date), weekOf: false });
   });
   PRE_TRAINING_DATES.forEach((d, i) => rows.push({ title: TRAINING_TITLE(i + 1), type: "Training", s: toDay(d), e: toDay(d), weekOf: false }));
   POST_WEEKS.forEach((d, i) => rows.push({ title: TRAINING_TITLE(11 + i), type: "Training", s: toDay(d), e: toDay(d) + 6, weekOf: true }));
@@ -2213,116 +844,39 @@ function matchCalendar() {
   const dist = (d, r) => d < r.s ? r.s - d : d > r.e ? d - r.e : 0;
   rows.forEach(r => {
     const k = norm(r.title);
-    const alts = (r.alts || []).map(norm);
-    const c = ev.filter(e => e.key === k || alts.includes(e.key)).sort((a, b) => dist(a.day, r) - dist(b.day, r))[0];
+    const c = ev.filter(e => e.key === k).sort((a, b) => dist(a.day, r) - dist(b.day, r))[0];
     if (!c) { r.status = "missing"; return; }
     r.ev = c; r.diff = c.day < r.s ? c.day - r.s : c.day > r.e ? c.day - r.e : 0; r.status = r.diff === 0 ? "ok" : "diff";
   });
-  const partEvents = new Set();
-  rows.forEach(r => {
-    r.parts = (MEETING_PARTS[r.title] || []).map(p => {
-      const k = norm(p.title), e = ev.filter(x => x.key === k).sort((a, b) => dist(a.day, r) - dist(b.day, r))[0] || null;
-      if (e) partEvents.add(e);
-      return Object.assign({}, p, { ev: e });
-    });
-  });
   const keys = new Set(rows.map(r => norm(r.title)));
-  const unmatched = ev.filter(e => !rows.some(r => r.ev === e) && !partEvents.has(e)).map(e => {
+  const unmatched = ev.filter(e => !rows.some(r => r.ev === e)).map(e => {
     let hint = "The title is not in the plan. Check it against the title list.";
-    if (EMAIL_TITLES.some(t => norm(t) === e.key)) hint = "This is now an email, so it no longer needs a calendar meeting. You can delete this invite.";
-    else if (keys.has(e.key)) hint = "Another invite already uses this title.";
+    if (keys.has(e.key)) hint = "Another invite already uses this title.";
     else if (e.key.startsWith("power bi tracker training")) hint = "Add the session number, for example " + TRAINING_TITLE(1) + ".";
     else if (e.key.startsWith("power bi tracker office hours")) hint = "Add the session number, for example " + OFFICE_TITLE(1) + ".";
     return { e, hint };
   });
   return { rows, unmatched };
 }
-const DONE = {}; // meetings marked Complete by hand (by title)
-const HELD = {}; // automatic completion switched off for a meeting (by title), after "Undo complete"
-// Trainings, office hours and communications complete by themselves once their scheduled time has passed.
-// Gates, milestones and the assessment stay manual.
-const autoEligible = r => r.type === "Training" || r.type === "Office hours" || r.type === "Communication";
-const rowAuto = r => autoEligible(r) && !HELD[r.title] && rowPast(r);
-const nowMs = () => TODAY_OVERRIDE ? Date.parse(TODAY + "T12:00:00") : Date.now();
-function rowDone(r) {
-  if (r.id) { const it = ITEMS.find(x => x.id === r.id); return !!it && it.status === "Complete"; }
-  if (r.type === "Communication") { const c = COMMS.find(x => x.title === r.title); if (c && c.status === "Sent") return true; }
-  return !!DONE[r.title] || rowAuto(r);
+function statusText(r) {
+  if (r.status === "missing") return "Not on calendar";
+  if (r.status === "ok") return r.e > r.s ? "Inside the planned window" : "On the planned date";
+  return "Date differs: " + plural(Math.abs(r.diff), "day") + (r.diff < 0 ? " before" : " after") + " plan";
 }
-const rowAutoOnly = r => rowAuto(r) && !DONE[r.title] && !(r.type === "Communication" && (COMMS.find(x => x.title === r.title) || {}).status === "Sent");
-function evPast(e, plannedEnd) {
-  if (e.end && e.end.length > 10) return new Date(e.end).getTime() < nowMs();
-  let d = toDay((e.end || e.start).slice(0, 10));
-  if (plannedEnd && d < plannedEnd) d = plannedEnd;
-  return d < today;
-}
-function rowPast(r) { return !!r.ev && evPast(r.ev, r.e) && (r.parts || []).every(p => !p.ev || evPast(p.ev)); }
-const rowReady = r => !rowDone(r) && rowPast(r);
-const rowSent = r => !rowDone(r) && !!r.ev && r.ev.invited > 0;
-function rowLabel(r) { return rowDone(r) ? "Complete" : r.status === "missing" ? "Not on calendar" : rowSent(r) ? "Invite Sent" : "Draft: On Calendar"; }
-function rowNote(r) {
-  if (rowAutoOnly(r)) return "Marked complete automatically after its scheduled time. Use Undo complete if it did not happen";
-  if (rowDone(r) || r.status === "missing") return "";
-  const bits = [];
-  if (norm(r.ev.subject) !== norm(r.title)) bits.push("Invite title is still \"" + r.ev.subject + "\". Rename it to match");
-  if (r.e > r.s && r.ev.end && r.ev.end.length === 10 && toDay(r.ev.end) < r.e) bits.push("Calendar event ends " + fmt(toDay(r.ev.end)) + ". Plan ends " + fmt(r.e) + ". Extend the event");
-  if (r.status === "diff") bits.push("Date differs: " + plural(Math.abs(r.diff), "day") + (r.diff < 0 ? " before" : " after") + " plan");
-  if (rowPast(r)) bits.push("Scheduled time has passed. Ready to mark Complete");
-  return bits.join(". ");
-}
-function statusText(r) { const n = rowNote(r); return rowLabel(r) + (n ? ". " + n : ""); }
-// status shown for a gate or milestone: Planned and Scheduled become "Draft: On Calendar" once the meeting is on the calendar
-function itemLabel(it) {
-  if (["Planned", "Scheduled", "Draft: On Calendar"].includes(it.status) && TITLES[it.id]) {
-    const r = matchCalendar().rows.find(x => x.id === it.id);
-    if (r && r.ev) return r.ev.invited > 0 ? "Invite Sent" : "Draft: On Calendar";
-  }
-  return it.status;
-}
-function toggleDone(title) {
-  const r = matchCalendar().rows.find(x => x.title === title); if (!r) return;
-  const done = rowDone(r);
-  if (r.id) {
-    const it = ITEMS.find(x => x.id === r.id);
-    if (done) it.status = it.prevStatus && it.prevStatus !== "Complete" ? it.prevStatus : (it.lane === "gates" ? "Planned" : "Scheduled");
-    else { it.prevStatus = it.status; it.status = "Complete"; }
-  } else if (r.type === "Communication") {
-    const c = COMMS.find(x => x.title === title);
-    if (done) { c.status = "Scheduled"; delete DONE[title]; if (rowPast(r)) HELD[title] = true; } else { c.status = "Sent"; DONE[title] = true; delete HELD[title]; }
-  } else if (done) { delete DONE[title]; if (autoEligible(r) && rowPast(r)) HELD[title] = true; }
-  else { DONE[title] = true; delete HELD[title]; }
-  markDirty(); renderTables(); refresh(true);
-}
-const isUrl = u => /^https:\/\//i.test(u || "");
-const whoBtn = e => e.invited ? '<button class="linkbtn" data-who="' + encodeURIComponent(e.subject) + '">' + esc(e.invited + " invited") + "</button>" : "";
-const teamsHtml = e => "link" in e ? (isUrl(e.link) ? '<a href="' + esc(e.link) + '" target="_blank" rel="noopener noreferrer">Join Teams meeting</a>' : e.link ? "Teams link added" : "No Teams link") : "";
 function calCell(r) {
   if (!r.ev) return '<span class="meta">&ndash;</span>';
   const e = r.ev, t = [fmtClock(e.start), fmtMins(e.start, e.end)].filter(Boolean).join(", ");
-  const bits = [e.organizer ? esc("Organizer: " + e.organizer) : "", teamsHtml(e), whoBtn(e)].filter(Boolean).join("; ");
-  return esc(fmtDay(e.day) + (t ? ", " + t : "")) + (bits ? '<div class="meta">' + bits + "</div>" : "");
-}
-function partLine(p) {
-  if (!p.ev) return esc(p.label + ": " + p.title + ". Not on calendar");
-  const e = p.ev, t = [fmtClock(e.start), fmtMins(e.start, e.end)].filter(Boolean).join(", ");
-  return esc(p.label + ": " + p.title + ". " + fmtDay(e.day) + (t ? ", " + t : "") + ". Draft: On Calendar" + (evPast(p.ev) ? ". Scheduled time has passed" : ""));
+  const extra = [e.organizer ? "Organizer: " + e.organizer : "", "link" in e ? (e.link ? "Teams link added" : "No Teams link") : ""].filter(Boolean).join("; ");
+  return esc(fmtDay(e.day) + (t ? ", " + t : "")) + (extra ? '<div class="meta">' + esc(extra) + "</div>" : "");
 }
 function renderMatch(m) {
   m = m || matchCalendar();
   const found = m.rows.filter(r => r.ev).length, miss = m.rows.length - found, diff = m.rows.filter(r => r.status === "diff").length;
-  const doneN = m.rows.filter(rowDone).length, ready = m.rows.filter(rowReady).length;
-  $("#matchSub").textContent = found + " of " + m.rows.length + " planned meetings found on the calendar by exact title. " + miss + " not there yet, " + diff + " on a different date. " +
-    doneN + " complete" + (ready ? ", " + ready + " past their scheduled time and ready to mark complete" : "") + ".";
-  const keep = r => state.mf === "all" || (state.mf === "ready" ? rowReady(r) : r.status === state.mf);
-  const rows = m.rows.filter(keep);
-  $("#matchRows").innerHTML = rows.length ? rows.map(r => {
-    const done = rowDone(r), note = rowNote(r);
-    const cls = done ? "on" : r.status === "missing" ? "idle dim" : (r.status === "diff" || rowPast(r)) ? "risk" : rowSent(r) ? "sent" : "idle";
-    const btn = state.edit ? '<div><button class="btn small" data-mc="' + encodeURIComponent(r.title) + '">' + (done ? "Undo complete" : "Mark complete") + "</button></div>" : "";
-    const partsHtml = (r.parts || []).map(p => '<div class="meta">' + partLine(p) + "</div>").join("");
-    return "<tr><td><b>" + esc(r.title) + "</b>" + partsHtml + "</td><td>" + r.type + "</td><td>" + esc(plannedLabel(r)) + "</td><td>" + calCell(r) +
-      '</td><td><span class="pill s-' + cls + '">' + esc(rowLabel(r)) + "</span>" + (note ? '<div class="meta">' + esc(note) + "</div>" : "") + btn + "</td></tr>";
-  }).join("")
+  $("#matchSub").textContent = found + " of " + m.rows.length + " planned meetings found by exact title. " + miss + " not on the calendar yet, " + diff + " on a different date.";
+  const rows = m.rows.filter(r => state.mf === "all" || r.status === state.mf);
+  $("#matchRows").innerHTML = rows.length ? rows.map(r =>
+    "<tr><td><b>" + esc(r.title) + "</b></td><td>" + r.type + "</td><td>" + esc(plannedLabel(r)) + "</td><td>" + calCell(r) +
+    '</td><td><span class="pill s-' + { ok: "on", diff: "risk", missing: "idle" }[r.status] + '">' + esc(statusText(r)) + "</span></td></tr>").join("")
     : '<tr><td colspan="5" class="meta">Nothing in this view.</td></tr>';
   const unmatched = m.unmatched.filter(u => norm(u.e.subject) !== norm("Power BI Tracker Office Hours"));
   $("#unmatched").innerHTML = unmatched.length
@@ -2333,10 +887,10 @@ function renderCoverage() {
   const m = matchCalendar(), rows = m.rows;
   const groups = [["Readiness gates", r => r.type === "Gate" || r.type === "Assessment"], ["Milestones", r => r.type === "Milestone"],
     ["Trainings", r => r.type === "Training"], ["Office hours", r => r.type === "Office hours"], ["Communications", r => r.type === "Communication"]];
-  const pips = g => '<div class="pips" aria-hidden="true">' + g.map(r => '<i class="' + (rowDone(r) ? "c" : r.status === "diff" ? "d" : rowSent(r) ? "f" : r.status === "ok" ? "p" : "") + '"></i>').join("") + "</div>";
-  $("#cov").innerHTML = groups.map(([label, f]) => { const g = rows.filter(f); return '<div class="covrow"><b>' + label + "</b><div>" + pips(g) + "<span>" + g.filter(r => r.ev).length + " of " + g.length + " on the calendar" + (g.filter(rowSent).length ? ", " + plural(g.filter(rowSent).length, "invite") + " sent" : "") + (g.filter(rowDone).length ? ", " + g.filter(rowDone).length + " complete" : "") + "</span></div></div>"; }).join("") +
+  const pips = g => '<div class="pips" aria-hidden="true">' + g.map(r => '<i class="' + (r.status === "ok" ? "f" : r.status === "diff" ? "d" : "") + '"></i>').join("") + "</div>";
+  $("#cov").innerHTML = groups.map(([label, f]) => { const g = rows.filter(f); return '<div class="covrow"><b>' + label + "</b><div>" + pips(g) + "<span>" + g.filter(r => r.ev).length + " of " + g.length + " on the calendar</span></div></div>"; }).join("") +
     '<div class="meta" style="padding-top:10px">' + (CALENDAR.syncedAt ? "Calendar last synced " + fmt(toDay(CALENDAR.syncedAt)) + "." : "Calendar data is from the source dashboard and has not been synced from Outlook yet.") +
-    " Meetings are matched by exact title. Light blue = on the calendar as a draft, blue = invite sent, amber = different date or ready to mark complete, green = complete, grey = not found.</div>";
+    " Meetings are matched by exact title. Green = on the planned date, amber = found on a different date, grey = not found.</div>";
   renderMatch(m);
 }
 
@@ -2352,15 +906,14 @@ function renderTables() {
   }).join("");
   $("#comRows").innerHTML = COMMS.map((c, i) => {
     const cell = state.edit ? '<select aria-label="Communication status" data-cs="' + i + '">' + opts(COMM_STATUS, c.status) + "</select>"
-      : (() => { const row = matchCalendar().rows.find(x => x.title === c.title), label = row && rowDone(row) ? "Sent" : c.status;
-          return '<span class="pill s-' + (label === "Sent" ? "on" : "idle") + '">' + esc(label) + "</span>"; })();
+      : '<span class="pill s-' + (c.status === "Sent" ? "on" : "idle") + '">' + esc(c.status) + "</span>";
     return "<tr><td>" + esc(c.date) + "</td><td><b>" + esc(c.name) + "</b></td><td>" + esc(c.audience) + "</td><td>" + esc(c.owner) + "</td><td>" + cell + "</td></tr>";
   }).join("");
   $("#riskAdd").hidden = !state.edit;
   $("#owners").innerHTML = OWNERS.map(o => "<div><b>" + esc(o.title) + "</b>" + esc(o.names) + "<br><small>" + esc(o.what) + "</small></div>").join("");
 }
 
-function refresh(detail) { renderVerdict(); renderTimeline(); renderOpen(); renderCoverage(); renderSummary(); if (detail) renderDetail(); }
+function refresh(detail) { renderVerdict(); renderTimeline(); renderOpen(); renderSummary(); if (detail) renderDetail(); }
 
 document.addEventListener("change", ev => {
   const t = ev.target, attr = ["data-rl", "data-rs", "data-cs"].find(a => t.hasAttribute && t.hasAttribute(a));
@@ -2395,7 +948,7 @@ $("#editBtn").onclick = ev => {
   state.edit = !state.edit;
   ev.currentTarget.setAttribute("aria-pressed", state.edit);
   ev.currentTarget.textContent = state.edit ? "Done editing" : "Edit statuses";
-  renderDetail(); renderTables(); renderOpen(); renderMatch();
+  renderDetail(); renderTables(); renderOpen();
 };
 
 function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 2400); }
@@ -2410,9 +963,6 @@ function copyText(t, msg) {
 }
 $("#copyBtn").onclick = () => copyText(buildSummary(), "Leadership summary copied. Paste it into an email.");
 $("#copySummary").onclick = $("#copyBtn").onclick;
-$("#copySubject").onclick = () => copyText(buildSummaryParts().subject, "Subject copied.");
-$("#copyTo").onclick = () => copyText(SUMMARY_TO.join("; "), "Recipients copied. Paste them into the To line.");
-$("#copyBody").onclick = () => copyText(buildSummaryParts().body, "Message copied.");
 
 
 /* ---------- walkthrough ---------- */
@@ -2480,15 +1030,15 @@ $("#walkScrub").addEventListener("input", ev => { stopPlay(); setWalk(+ev.target
 
 /* ---------- save and load updates ---------- */
 function snapshot() {
-  const items = {}; ITEMS.forEach(i => items[i.id] = { status: i.status, done: i.done, note: i.leaderNote, prev: i.prevStatus || "" });
+  const items = {}; ITEMS.forEach(i => items[i.id] = { status: i.status, done: i.done, note: i.leaderNote });
   const open = {}; OPEN_ITEMS.forEach(o => open[o.id] = o.done);
-  return { app: "pbi-tracker-readiness", version: 1, publishVersion: state.version, updatedBy: UPDATED_BY, publishNames: !!state.pubNames, savedAt: new Date().toISOString(), items, open,
+  return { app: "pbi-tracker-readiness", version: 1, publishVersion: state.version, updatedBy: UPDATED_BY, savedAt: new Date().toISOString(), items, open,
     risks: RISKS.map(r => ({ risk: r.risk, level: r.level, status: r.status })),
     comms: COMMS.map(c => ({ name: c.name, status: c.status })),
     addedRisks: RISKS.filter(r => r.custom).map(r => ({ risk: r.risk, impact: r.impact, mitigation: r.mitigation, owner: r.owner, level: r.level, status: r.status })),
     removedRisks: REMOVED.risks.slice(),
     addedOpen: OPEN_ITEMS.filter(o => o.custom).map(o => ({ id: o.id, q: o.q, owner: o.owner, due: o.due, done: o.done })),
-    removedOpen: REMOVED.open.slice(), meetingsDone: Object.keys(DONE), meetingsHeld: Object.keys(HELD) };
+    removedOpen: REMOVED.open.slice() };
 }
 function applySnapshot(d) {
   if (!d || d.app !== "pbi-tracker-readiness") throw new Error("That file is not a saved dashboard update.");
@@ -2497,15 +1047,11 @@ function applySnapshot(d) {
   (d.removedOpen || []).forEach(id => { const i = OPEN_ITEMS.findIndex(o => o.id === id); if (i >= 0) OPEN_ITEMS.splice(i, 1); if (!REMOVED.open.includes(id)) REMOVED.open.push(id); n++; });
   (d.addedRisks || []).forEach(r => { if (r && r.risk && !RISKS.some(x => x.risk === r.risk)) { RISKS.push(Object.assign({ impact: "", mitigation: "", owner: "", level: "Medium", status: "Open" }, r, { custom: true })); n++; } });
   (d.addedOpen || []).forEach(o => { if (o && o.id && o.q && !OPEN_ITEMS.some(x => x.id === o.id)) { OPEN_ITEMS.push({ id: o.id, q: o.q, owner: o.owner || "", due: o.due || "", done: !!o.done, custom: true }); n++; } });
-  if (typeof d.publishNames === "boolean") state.pubNames = d.publishNames;
-  if (Array.isArray(d.meetingsHeld)) { Object.keys(HELD).forEach(k => delete HELD[k]); d.meetingsHeld.forEach(t => { HELD[t] = true; n++; }); }
-  if (Array.isArray(d.meetingsDone)) { Object.keys(DONE).forEach(k => delete DONE[k]); d.meetingsDone.forEach(t => { DONE[t] = true; n++; }); }
   Object.entries(d.items || {}).forEach(([id, v]) => {
     const it = ITEMS.find(x => x.id === id); if (!it || !v) return;
     if (STATUSES.includes(v.status)) it.status = v.status;
     if (Array.isArray(v.done) && v.done.length === it.done.length) it.done = v.done.map(Boolean);
     if (typeof v.note === "string") it.leaderNote = v.note;
-    if (typeof v.prev === "string" && v.prev) it.prevStatus = v.prev;
     n++;
   });
   Object.entries(d.open || {}).forEach(([id, v]) => { const o = OPEN_ITEMS.find(x => x.id === id); if (o) { o.done = !!v; n++; } });
@@ -2557,19 +1103,17 @@ $("#publishBtn").onclick = () => {
   state.version += 1;
   const snap = snapshot();
   const baked = "const BAKED" + " = " + JSON.stringify(snap).replace(/<\//g, "<\\/") + ";";
-  let html = PRISTINE.replace(new RegExp("const " + "BAKED = [^\\n]*;"), () => baked);
-  if (!(PUBLISH_ATTENDEE_NAMES || state.pubNames)) html = html.replace(new RegExp("const " + "ATTENDEES = \\{[\\s\\S]*?\\n\\};"), () => "const ATTENDEES = {}; // names removed when published");
+  const html = PRISTINE.replace(new RegExp("const " + "BAKED = [^\\n]*;"), () => baked);
   const blob = new Blob([html], { type: "text/html" });
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
-  a.download = "index.html"; // the name GitHub Pages opens by default
+  a.download = "power-bi-tracker-launch-readiness.html";
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   storeSave(snap);
   state.stampAt = snap.savedAt; state.unpublished = false;
   state.dirty = false; $("#dirty").hidden = true;
-  state.publishedNow = true; renderGit();
   renderStamp(); renderSummary();
-  toast("Version " + state.version + " downloaded as index.html. Upload it to GitHub over the old file.");
+  toast("Version " + state.version + " downloaded. Upload it over the old file so everyone sees your changes.");
 };
 
 /* ---------- add and remove risks and open items (edit mode) ---------- */
@@ -2591,8 +1135,6 @@ $("#addRiskBtn").onclick = () => {
   markDirty(); renderTables(); refresh(false); toast("Risk added.");
 };
 document.addEventListener("click", ev => {
-  const mc = ev.target.closest("[data-mc]");
-  if (mc) { toggleDone(decodeURIComponent(mc.dataset.mc)); return; }
   const ro = ev.target.closest("[data-rm-open]");
   if (ro) {
     const i = OPEN_ITEMS.findIndex(o => o.id === ro.dataset.rmOpen); if (i < 0) return;
@@ -2612,13 +1154,12 @@ document.addEventListener("click", ev => {
 /* ---------- show or hide the editing tools (Cmd+Shift+A on Mac, Ctrl+Shift+A on Windows) ---------- */
 function setEditorUI(on) {
   state.unlocked = !!on;
-  if (on) renderGit();
   document.querySelectorAll(".editor-only").forEach(el => { el.hidden = !on; });
   $("#dirty").hidden = !(on && state.dirty);
   if (!on && state.edit) {
     state.edit = false;
     const b = $("#editBtn"); b.setAttribute("aria-pressed", false); b.textContent = "Edit statuses";
-    renderDetail(); renderTables(); renderOpen(); renderMatch();
+    renderDetail(); renderTables(); renderOpen();
   }
 }
 document.addEventListener("keydown", ev => {
@@ -2653,45 +1194,6 @@ let startTheme = "auto";
 try { const t = localStorage.getItem(THEME_KEY); if (THEMES.includes(t)) startTheme = t; } catch (e) {}
 applyTheme(startTheme);
 
-/* ---------- who was invited ---------- */
-function openWho(subject) {
-  const list = ATTENDEES[subject] || [], ev = CALENDAR.events.find(x => x.subject === subject);
-  const n = list.length || (ev && ev.invited) || 0;
-  $("#whoTitle").textContent = "Invited to " + shortTitle(subject) + " (" + n + ")";
-  if (!list.length) {
-    $("#whoBody").innerHTML = '<p class="meta">The names are left out of this copy. They are removed when the page is published, to keep them off a public site. To show them, open your working file, tick "Include invited names when I publish" under Publish to GitHub, and publish again. If your working file has no names either, ask for a calendar sync to load them.</p>';
-  } else {
-    const groups = list.filter(a => a.group).length, known = list.every(a => a.response);
-    const sect = k => list.filter(a => (a.type || "Invited") === k);
-    const items = arr => "<ul>" + arr.map(a => "<li>" + esc(a.name) + (a.group ? ' <span class="meta">(group)</span>' : "") + (a.response ? ' <span class="meta">(' + esc(a.response) + ")</span>" : "") + "</li>").join("") + "</ul>";
-    const count = r => list.filter(a => a.response === r).length;
-    $("#whoBody").innerHTML = '<p class="meta">' + n + " invited" + (groups ? ", including " + plural(groups, "group") + ", so more people than listed receive it" : "") + ". " +
-      (known ? count("Accepted") + " accepted, " + count("Declined") + " declined, " + count("Tentative") + " tentative, " + count("No response yet") + " no response yet." : "Responses were not checked for this meeting.") + "</p>" +
-      ["Required", "Optional", "Invited"].map(k => sect(k).length ? "<h4>" + (k === "Invited" ? "Invited" : k) + "</h4>" + items(sect(k)) : "").join("");
-  }
-  $("#whoModal").hidden = false; $("#whoClose").focus();
-}
-function closeWho() { $("#whoModal").hidden = true; }
-document.addEventListener("click", ev => {
-  const w = ev.target.closest && ev.target.closest("[data-who]");
-  if (w) { openWho(decodeURIComponent(w.dataset.who)); return; }
-  if ((ev.target.closest && ev.target.closest("[data-close-who]")) || (ev.target && ev.target.id === "whoModal")) closeWho();
-});
-document.addEventListener("keydown", ev => { if (ev.key === "Escape" && !$("#whoModal").hidden) closeWho(); });
-
-/* ---------- GitHub publish commands ---------- */
-function renderGit() {
-  const msg = "Dashboard version " + (state.publishedNow ? state.version : state.version + 1);
-  const one = "cd " + GIT_FOLDER + ' && mv "$(ls -t ~/Downloads/index*.html | head -1)" index.html && git add index.html && git commit -m "' + msg + '" && git push';
-  const steps = ["cd " + GIT_FOLDER, "mv ~/Downloads/index.html ./index.html", "git add index.html", 'git commit -m "' + msg + '"', "git push"].join("\n");
-  $("#pubNames").checked = !!state.pubNames;
-  $("#gitOne").textContent = one; $("#gitSteps").textContent = steps;
-  state.gitOne = one; state.gitSteps = steps;
-}
-$("#pubNames").onchange = ev => { state.pubNames = ev.target.checked; markDirty(); };
-$("#copyGit").onclick = () => copyText(state.gitOne, "Command copied. Paste it into Terminal and press Return.");
-$("#copyGitSteps").onclick = () => copyText(state.gitSteps, "Steps copied. Paste them into Terminal.");
-
 /* ---------- version stamp ---------- */
 function stampText() {
   if (!state.stampAt) return "Version " + state.version + ". No updates published yet.";
@@ -2701,7 +1203,7 @@ function stampText() {
 function renderStamp() { $("#stamp").textContent = stampText(); }
 
 /* ---------- leadership summary ---------- */
-function buildSummaryParts() {
+function buildSummary() {
   const g = gates(), counts = { on: 0, idle: 0, risk: 0, off: 0 };
   g.forEach(i => counts[effective(i).st]++);
   const flagged = ITEMS.filter(i => ["off", "risk"].includes(effective(i).st));
@@ -2711,32 +1213,18 @@ function buildSummaryParts() {
   const headline = days < 0 ? "Power BI Tracker went live on " + fmt(goLive()) : "Go-live on " + fmt(goLive()) + " is " + word;
   const when = i => i.e > i.s ? fmt(i.s) + " to " + fmt(i.e) : fmt(i.s);
   const L = [];
-  const subject = "Power BI Tracker rollout: readiness update (" + fmt(today) + "). " + headline;
-  const to = SUMMARY_TO.join(", ");
-  const andList = a => a.length < 2 ? a.join("") : a.slice(0, -1).join(", ") + " and " + a[a.length - 1];
-  const opening = days < 0 ? "the Power BI Tracker went live on " + fmt(goLive()) + ", " + plural(-days, "day") + " ago."
-    : v === "on" ? "good news: we're on track for go-live on " + fmt(goLive()) + (days === 0 ? ", which is today." : ", " + plural(days, "day") + " from now.")
-    : v === "risk" ? "I want to give you a heads-up that go-live on " + fmt(goLive()) + " is at risk" + (days > 0 ? ", with " + plural(days, "day") + " to go." : ".")
-    : "I want to flag that go-live on " + fmt(goLive()) + " is currently off track" + (days > 0 ? ", with " + plural(days, "day") + " to go." : ".");
-  const bits = [[counts.on, "on track"], [counts.idle, "planned"], [counts.risk, "at risk"], [counts.off, "off track"]].filter(x => x[0]).map(x => x[0] + (x[0] === 1 ? " is " : " are ") + x[1]);
-  L.push("Hi everyone,", "");
-  L.push("Here's a quick update on the Power BI Tracker rollout. " + cap(opening) + " Of our " + g.length + " readiness gates, " + andList(bits) + ". " +
-    (() => {
-      const sched = flagged.filter(i => effective(i).why), manual = flagged.filter(i => !effective(i).why);
-      const parts = [];
-      if (manual.length) parts.push(andList(manual.map(i => i.title)) + (manual.length === 1 ? " is" : " are") + " marked " + andList([...new Set(manual.map(i => i.status))]) + ".");
-      if (sched.length) parts.push("The schedule check says " + plural(sched.length, "item") + (sched.length === 1 ? " does" : " do") + " not fit before go-live: " + andList(sched.map(i => i.title)) + ".");
-      return parts.length ? parts.join(" ") : "Nothing is behind schedule right now.";
-    })());
+  L.push("Subject: Power BI Tracker rollout: readiness update (" + fmt(today) + "). " + headline);
+  L.push("To: " + SUMMARY_TO.join(", "));
+  L.push("", "Hello Leadership Team,", "");
+  let p = headline + (days > 0 ? ", " + plural(days, "day") + " from today" : days === 0 ? " (today)" : "") + ". " +
+    counts.on + " of " + g.length + " readiness gates are on track and " + counts.idle + " are planned. " +
+    (counts.risk ? counts.risk + " at risk. " : "") + (counts.off ? counts.off + " off track. " : "");
+  p += flagged.length ? plural(flagged.length, "item") + " would not fit before go-live: " + flagged.map(i => i.title).join("; ") + "." : "No gate or milestone is behind schedule.";
+  L.push(p);
   const nextGate = g.filter(i => i.e >= today && i.status !== "Complete").sort((a, b) => a.s - b.s)[0];
-  if (nextGate) L.push("", "Coming up next is " + nextGate.title + " on " + when(nextGate) + " (" + (nextGate.s - today <= 0 ? "already under way" : "in " + plural(nextGate.s - today, "day")) + "), owned by " + andList(nextGate.owners) + ".");
+  if (nextGate) L.push("", "Next gate: " + nextGate.title + ", " + when(nextGate) + " (" + (nextGate.s - today <= 0 ? "under way" : "in " + plural(nextGate.s - today, "day")) + "). Owner: " + nextGate.owners.join(", ") + ".");
   L.push("", "Readiness gates");
-  g.forEach(i => { const e = effective(i); L.push("- " + i.title + (i.email ? " (by email)" : "") + ", " + when(i) + ": " + itemLabel(i) + (e.why ? ". " + e.why : "") + " (" + i.owners.join(", ") + ")" + (i.leaderNote ? ". Note: " + i.leaderNote : "")); });
-  L.push("", "Training and office hours");
-  seriesRows().forEach(sr => {
-    const dn = sr.rows.filter(rowDone).length, nx = sr.rows.find(r => !rowDone(r));
-    L.push("- " + sr.title + ": " + dn + " of " + sr.rows.length + " complete, " + fmt(sr.first) + " to " + fmt(sr.last) + (nx ? ". Next: " + shortTitle(nx.title) + ", " + fmt(nx.ev ? nx.ev.day : nx.s) : ". All complete") + ".");
-  });
+  g.forEach(i => { const e = effective(i); L.push("- " + i.title + ", " + when(i) + ": " + i.status + (e.why ? ". " + e.why : "") + " (" + i.owners.join(", ") + ")" + (i.leaderNote ? ". Note: " + i.leaderNote : "")); });
   const ar = activeRisks();
   L.push("", cap(riskSummary()));
   ar.forEach(r => L.push("- " + r.risk + " (" + r.level + ", " + r.status + "; " + r.owner + ")"));
@@ -2744,22 +1232,14 @@ function buildSummaryParts() {
   L.push("", "To close before launch");
   if (open.length) open.forEach(o => L.push("- " + (o.dyn ? o.dyn() : o.q) + " (" + o.owner + "; " + o.due + ")")); else L.push("- Nothing open.");
   const m = matchCalendar(), found = m.rows.filter(r => r.ev).length, diff = m.rows.filter(r => r.status === "diff").length;
-  const doneN = m.rows.filter(rowDone).length, readyN = m.rows.filter(rowReady).length;
   L.push("", "Calendar");
   L.push(CALENDAR.syncedAt
     ? "- " + found + " of " + m.rows.length + " planned meetings are on the calendar by exact title (" + (m.rows.length - found) + " not yet, " + diff + " on a different date). Last synced " + fmt(toDay(CALENDAR.syncedAt)) + "."
     : "- The calendar has not been synced from Outlook yet.");
-  const autoN = m.rows.filter(rowAutoOnly).length, sentN = m.rows.filter(rowSent).length;
-  L.push("- " + sentN + " of " + m.rows.length + " meetings have invites sent.");
-  L.push("- " + doneN + " of " + m.rows.length + " meetings are complete" + (autoN ? " (" + autoN + " automatically after their scheduled time)" : "") + (readyN ? ", and " + readyN + " gates or milestones are past their scheduled time and ready to mark complete." : "."));
   L.push("", "Thanks,", UPDATED_BY, "", stampText());
-  return { subject, to, body: L.join("\n") };
+  return L.join("\n");
 }
-function buildSummary() { const p = buildSummaryParts(); return "Subject: " + p.subject + "\nTo: " + p.to + "\n\n" + p.body; }
-function renderSummary() {
-  const p = buildSummaryParts();
-  $("#sumSubject").textContent = p.subject; $("#sumTo").textContent = p.to; $("#sumText").textContent = p.body;
-}
+function renderSummary() { $("#sumText").textContent = buildSummary(); }
 
 const TABS = [...document.querySelectorAll(".tab")];
 function showTab(id, focus) {
@@ -2797,9 +1277,8 @@ if (BAKED) { try { applySnapshot(BAKED); bakedAt = BAKED.savedAt || null; state.
   }
 }
 $("#asof").textContent = fmt(today);
-renderStamp(); renderGit();
+renderStamp();
 state.sel = (gates().filter(i => i.e >= today).sort((a, b) => a.s - b.s)[0] || gates()[0]).id;
 renderTables(); renderCoverage(); refresh(true); renderWalk();
-{ const tick = setInterval(() => { if (typeof document === "undefined" || !document.hidden) { refresh(false); renderTables(); } }, 60000); if (tick && tick.unref) tick.unref(); }
 if (restoredAt) toast("Restored your saved changes.");
 </script></body></html>
