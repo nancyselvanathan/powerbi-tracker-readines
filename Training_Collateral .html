@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPO Performance Tracker – Onmark &amp; Unity GPO Release Resources</title>
+<style>
+  :root {
+    --bg: #eef3f6;
+    --surface: #ffffff;
+    --ink: #14284b;
+    --ink-soft: #4a5b73;
+    --line: #cfdae3;
+    --navy: #14305a;
+    --teal: #1f7a8c;
+    --orange: #e07a2f;
+    --on-navy: #ffffff;
+    --tint: #e3edf3;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1a2b;
+      --surface: #14263d;
+      --ink: #e8eef5;
+      --ink-soft: #a9b8ca;
+      --line: #28405c;
+      --navy: #0b2547;
+      --teal: #5fb8c9;
+      --orange: #f0953f;
+      --on-navy: #ffffff;
+      --tint: #1b3350;
+      color-scheme: dark;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.55;
+  }
+  a { color: inherit; }
+  :focus-visible { outline: 3px solid var(--orange); outline-offset: 2px; }
+
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+
+  /* Header */
+  header.top {
+    background: var(--navy);
+    color: var(--on-navy);
+    padding: 22px 0 24px;
+    border-bottom: 4px solid var(--orange);
+  }
+  header.top .wrap {
+    display: grid; grid-template-columns: 1fr auto; gap: 8px 32px; align-items: end;
+  }
+  .brandline { grid-column: 2; grid-row: 1 / span 2; align-self: start; text-align: right; }
+  .brand { font-weight: 800; letter-spacing: .08em; font-size: 1rem; white-space: nowrap; }
+  .brand .amp { font-weight: 400; opacity: .7; margin: 0 4px; }
+  header.top h1 {
+    grid-column: 1; margin: 0;
+    font-size: clamp(1.35rem, 2.6vw, 1.75rem);
+    line-height: 1.15; font-weight: 800;
+  }
+  header.top p { grid-column: 1; margin: 0; max-width: 90ch; font-size: .95rem; opacity: .9; }
+  @media (max-width: 640px) {
+    header.top .wrap { grid-template-columns: 1fr; }
+    .brandline { grid-column: 1; grid-row: auto; text-align: left; margin-bottom: 4px; }
+  }
+
+  nav.jump {
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 5;
+  }
+  nav.jump .wrap { display: flex; gap: 4px; overflow-x: auto; }
+  nav.jump a {
+    padding: 14px 16px; text-decoration: none; white-space: nowrap;
+    font-weight: 600; font-size: .95rem; color: var(--ink-soft);
+    border-bottom: 3px solid transparent;
+  }
+  nav.jump a:hover { color: var(--ink); border-bottom-color: var(--orange); }
+
+  section { padding: 36px 0 4px; scroll-margin-top: 56px; }
+  h2 { margin: 0 0 6px; font-size: 1.5rem; color: var(--ink); }
+  .sub { margin: 0 0 24px; color: var(--ink-soft); max-width: 62ch; }
+
+  /* Featured QRG */
+  .qrg {
+    display: grid; grid-template-columns: 1fr auto; gap: 28px; align-items: center;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 8px solid var(--orange);
+    border-radius: 6px;
+    padding: 28px 30px;
+  }
+  .qrg h3 { margin: 0 0 8px; font-size: 1.35rem; }
+  .qrg p { margin: 0 0 14px; color: var(--ink-soft); max-width: 58ch; }
+  .views { display: flex; gap: 8px; flex-wrap: wrap; margin: 0; padding: 0; list-style: none; }
+  .views li {
+    background: var(--tint); border-radius: 999px; padding: 4px 12px;
+    font-size: .85rem; font-weight: 600;
+  }
+  .btn {
+    display: inline-block; text-decoration: none; font-weight: 700;
+    background: var(--orange); color: #1b1206;
+    padding: 12px 22px; border-radius: 6px; white-space: nowrap;
+  }
+  .btn:hover { filter: brightness(1.08); }
+  .meta { display: block; margin-top: 8px; font-size: .8rem; color: var(--ink-soft); text-align: center; }
+
+  /* Tab-strip style list for product detail guides */
+  .tabs-note {
+    display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px;
+  }
+  ul.guides { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+  ul.guides li { border-bottom: 1px solid var(--line); }
+  ul.guides a.row {
+    display: grid; grid-template-columns: 210px 1fr auto; gap: 20px; align-items: center;
+    padding: 16px 12px; text-decoration: none;
+  }
+  ul.guides a.row:hover { background: var(--surface); }
+  ul.guides .name { font-weight: 700; color: var(--navy); font-size: 1.05rem; }
+  @media (prefers-color-scheme: dark) { ul.guides .name { color: var(--teal); } }
+  ul.guides .desc { color: var(--ink-soft); }
+  ul.guides .open { font-weight: 700; color: var(--teal); white-space: nowrap; }
+  ul.guides .pages { color: var(--ink-soft); font-weight: 400; font-size: .85rem; margin-left: 6px; }
+
+  .callout {
+    margin-top: 24px; padding: 14px 18px; background: var(--tint);
+    border-left: 4px solid var(--teal); border-radius: 4px; max-width: 70ch;
+  }
+  .callout p { margin: 0; }
+
+
+  /* Feature widgets */
+  .widgets { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 18px; }
+  .widget {
+    display: flex; flex-direction: column;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 6px; overflow: hidden;
+  }
+  .widget header {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--navy); color: var(--on-navy); padding: 12px 14px;
+  }
+  .widget header svg { width: 24px; height: 24px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .widget header h3 { margin: 0; font-size: 1rem; line-height: 1.2; flex: 1; }
+  .widget header em { font-style: normal; font-size: .75rem; opacity: .8; white-space: nowrap; }
+  .widget .body { padding: 14px 16px 6px; flex: 1; }
+  .widget .shows { margin: 0 0 14px; font-size: .95rem; }
+  .widget .ask { margin: 0; padding-left: 10px; border-left: 3px solid var(--orange); color: var(--ink-soft); font-size: .88rem; font-style: italic; }
+  .widget .ask span { display: block; font-style: normal; font-weight: 700; font-size: .78rem; color: var(--ink); margin-bottom: 2px; }
+  .widget .open {
+    display: block; margin: 12px 16px 16px; padding: 9px 12px; text-align: center; text-decoration: none;
+    font-weight: 700; font-size: .92rem; color: var(--teal); border: 2px solid var(--teal); border-radius: 6px;
+  }
+  .widget .open:hover { background: var(--teal); color: var(--surface); }
+  .widget.wide { grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; }
+  .widget.wide header { flex: 0 0 240px; align-items: flex-start; }
+  .widget.wide .body { flex: 1 1 300px; padding-top: 16px; }
+  .widget.wide .open { align-self: center; margin: 16px; flex: none; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+  /* Videos */
+  .videos { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 24px; }
+  .video { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .video video { width: 100%; display: block; background: #000; aspect-ratio: 16 / 9; }
+  .video .cap { padding: 16px 18px 18px; }
+  .video h3 { margin: 0 0 4px; font-size: 1.05rem; }
+  .video p { margin: 0; color: var(--ink-soft); font-size: .95rem; }
+
+  footer { margin-top: 56px; padding: 28px 0 44px; border-top: 1px solid var(--line); color: var(--ink-soft); font-size: .92rem; }
+  footer strong { color: var(--ink); }
+
+  @media (max-width: 720px) {
+    .qrg { grid-template-columns: 1fr; }
+    ul.guides a.row { grid-template-columns: 1fr; gap: 4px; }
+    .videos { grid-template-columns: 1fr; }
+  }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <div class="brandline">
+      <div class="brand">ONMARK <span class="amp">&amp;</span> UNITY GPO</div>
+    </div>
+    <h1>GPO Performance Tracker resources</h1>
+    <p>The quick reference guide, a guide for each feature, and walkthrough videos, for both Onmark and Unity GPO.</p>
+  </div>
+</header>
+
+<nav class="jump" aria-label="Page sections">
+  <div class="wrap">
+    <a href="#start">Start here</a>
+    <a href="#product-detail">Product Detail tabs</a>
+    <a href="#top-opps">Top Opportunities</a>
+    <a href="#videos">Videos</a>
+  </div>
+</nav>
+
+<main class="wrap">
+
+  <section id="start">
+    <h2>Start here</h2>
+    <p class="sub">New to the tracker? Read the quick reference guide first, then use the feature guides when you need detail on a specific tab.</p>
+    <div class="qrg">
+      <div>
+        <h3>GPO Performance Tracker – Quick Reference Guide</h3>
+        <p>For both Onmark and Unity GPO. How to track savings, tier progress and top opportunities by customer and quarter, with key terms, slicers and formulas at the back.</p>
+        <ul class="views" aria-label="Views covered">
+          <li>Summary View</li>
+          <li>Product Detail View</li>
+          <li>Top Opportunities View</li>
+          <li>Key Terms</li>
+        </ul>
+      </div>
+      <div>
+        <a class="btn" href="GPO_Performance_Tracker_QRG_Unity_Onmark.pdf" target="_blank" rel="noopener">Open the QRG</a>
+        <span class="meta">PDF, 22 slides</span>
+      </div>
+    </div>
+  </section>
+
+  <section id="product-detail">
+    <h2>Product Detail View: one guide per tab</h2>
+    <p class="sub">Listed in the same order as the tabs on the Product Detail page. Each guide uses a real customer example and a "if the customer asks" talking point.</p>
+    <div class="widgets">
+      <article class="widget">
+        <header><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20h5v-5h5v-5h5V5h3"/></svg><h3>Opportunity Tiers</h3><em>2 pages</em></header>
+        <div class="body">
+          <p class="shows">Every tier on the contract, how much volume it takes, and whether it is already achieved.</p>
+          <p class="ask"><span>Customer asks</span>&ldquo;Are we at risk of losing any of these tiers?&rdquo;</p>
+        </div>
+        <a class="open" href="Feature_Guide_-_Opportunity_Tiers.pdf" target="_blank" rel="noopener">Open guide<span class="sr"> for Opportunity Tiers</span></a>
+      </article>
+      <article class="widget">
+        <header><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 15h18" stroke-dasharray="3 3"/><path d="M12 12V4m-4 4 4-4 4 4"/></svg><h3>Baseline</h3></header>
+        <div class="body">
+          <p class="shows">The volume that growth-based rebates are measured against, and how far the customer sits above it.</p>
+          <p class="ask"><span>Customer asks</span>&ldquo;How is our baseline determined?&rdquo;</p>
+        </div>
+        <a class="open" href="Feature_Guide_-_Baseline.pdf" target="_blank" rel="noopener">Open guide<span class="sr"> for Baseline</span></a>
+      </article>
+      <article class="widget">
+        <header><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 12V4m0 8 6.5 4"/></svg><h3>Product Share</h3></header>
+        <div class="body">
+          <p class="shows">Contracted product volume versus competitor volume, with the competitor breakdown.</p>
+          <p class="ask"><span>Customer asks</span>&ldquo;How much would closing that gap be worth?&rdquo;</p>
+        </div>
+        <a class="open" href="Feature_Guide_-_Product_Share.pdf" target="_blank" rel="noopener">Open guide<span class="sr"> for Product Share</span></a>
+      </article>
+      <article class="widget">
+        <header><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20v-7M10 20V6M15 20v-10M20 20v-5"/></svg><h3>History</h3></header>
+        <div class="body">
+          <p class="shows">Discount and rebate trend by quarter, with quarterly and monthly charts.</p>
+          <p class="ask"><span>Customer asks</span>&ldquo;Why did our discount jump so much this quarter?&rdquo;</p>
+        </div>
+        <a class="open" href="Feature_Guide_-_History.pdf" target="_blank" rel="noopener">Open guide<span class="sr"> for History</span></a>
+      </article>
+      <article class="widget">
+        <header><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-6-5.5-6-10a6 6 0 1 1 12 0c0 4.5-6 10-6 10z"/><circle cx="12" cy="11" r="2"/></svg><h3>Ship To NDC</h3></header>
+        <div class="body">
+          <p class="shows">Drill from product and NDC to each ship-to account and invoice, with the rebate-eligible flag.</p>
+          <p class="ask"><span>Customer asks</span>&ldquo;Are all our locations set up correctly?&rdquo;</p>
+        </div>
+        <a class="open" href="Feature_Guide_-_Ship_To_NDC.pdf" target="_blank" rel="noopener">Open guide<span class="sr"> for Ship To NDC</span></a>
+      </article>
+      <article class="widget">
+        <header><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M6.3 6.3l11.4 11.4"/></svg><h3>Off Contract Sales</h3></header>
+        <div class="body">
+          <p class="shows">Invoice-level detail for purchases made outside the GPO contract.</p>
+          <p class="ask"><span>Customer asks</span>&ldquo;What&rsquo;s the Price Protection Rebate about?&rdquo;</p>
+        </div>
+        <a class="open" href="Feature_Guide_-_Off_Contract_Sales.pdf" target="_blank" rel="noopener">Open guide<span class="sr"> for Off Contract Sales</span></a>
+      </article>
+      <article class="widget">
+        <header><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/></svg><h3>Multi Quarter</h3></header>
+        <div class="body">
+          <p class="shows">Rebates earned across several quarters, including rolling consecutive-quarter contracts.</p>
+          <p class="ask"><span>Customer asks</span>&ldquo;Does this contract ever expire?&rdquo;</p>
+        </div>
+        <a class="open" href="Feature_Guide_-_Multi_Quarter.pdf" target="_blank" rel="noopener">Open guide<span class="sr"> for Multi Quarter</span></a>
+      </article>
+    </div>
+  </section>
+
+  <section id="top-opps">
+    <h2>Top Opportunities View</h2>
+    <p class="sub">The portfolio-wide page for deciding where extra purchases pay off most.</p>
+    <div class="widgets">
+      <article class="widget wide">
+        <header><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg><h3>Opportunity Highlights</h3><em>3 pages</em></header>
+        <div class="body">
+          <p class="shows">Ranks every product and tier a customer could still reach by ROI % and Days of Purchase. Switch between Current and Projected, and narrow to what is realistic before quarter end.</p>
+          <p class="ask"><span>Customer asks</span>&ldquo;Which products should we focus on this quarter?&rdquo;</p>
+        </div>
+        <a class="open" href="Feature_Guide_-_Opportunity_Highlights.pdf" target="_blank" rel="noopener">Open guide<span class="sr"> for Opportunity Highlights</span></a>
+      </article>
+    </div>
+    <div class="callout">
+      <p>Suggested flow for a customer conversation: open Opportunity Highlights in Projected view, cap Days of Purchase at the business days left in the quarter, then confirm each pick on that product's Opportunity Tiers tab.</p>
+    </div>
+  </section>
+
+  <section id="videos">
+    <h2>Videos</h2>
+    <p class="sub">Short walkthroughs you can watch here without leaving the page.</p>
+    <div class="videos">
+      <article class="video">
+        <video controls preload="metadata" src="Tableau_Tracker_PVD_Vs_PowerBI_tracker_PDF.mp4"></video>
+        <div class="cap">
+          <h3>Tableau Tracker vs. Power BI Tracker</h3>
+          <p>Product View compared side by side across the two trackers. About 7 min 40 sec.</p>
+        </div>
+      </article>
+      <article class="video">
+        <video controls preload="metadata" src="Tracker_PDF_Generation.mp4"></video>
+        <div class="cap">
+          <h3>Generating a tracker PDF</h3>
+          <p>How to export the tracker as a PDF. About 5 min 25 sec.</p>
+        </div>
+      </article>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <strong>Questions?</strong> Contact your Onmark or Unity GPO account team or attend scheduled office hours during the rollout period.
+  </div>
+</footer>
+
+</body>
+</html>
